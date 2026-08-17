@@ -21,10 +21,18 @@ Directory.CreateDirectory(Path.Combine(webRoot, "uploads"));
 // instead (see the bootstrap below).
 var dbProvider = builder.Configuration["Database:Provider"] ?? "SqlServer";
 var useSqlite = dbProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase);
+var usePostgres = dbProvider.Equals("Postgres", StringComparison.OrdinalIgnoreCase);
+if (usePostgres)
+{
+    // The model stores DateTimes without Kind=Utc; without this switch Npgsql
+    // rejects them for 'timestamp with time zone' columns.
+    AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+}
 builder.Services.AddDbContext<AppDbContext>(opt =>
 {
     var conn = builder.Configuration.GetConnectionString("Default");
     if (useSqlite) opt.UseSqlite(conn);
+    else if (usePostgres) opt.UseNpgsql(conn);
     else opt.UseSqlServer(conn);
 });
 
@@ -131,15 +139,18 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 
 var app = builder.Build();
 
-// Apply pending migrations on startup in Development.
-if (app.Environment.IsDevelopment())
+// Bootstrap the schema on startup. The committed migration history is SQL
+// Server-specific, so SQLite and Postgres create the schema straight from the
+// model (HasData seeds included) — a no-op once the database exists.
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    // The migration history is SQL Server-specific, so under SQLite create the
-    // schema straight from the model (HasData seeds included).
-    if (useSqlite) db.Database.EnsureCreated();
+    if (useSqlite || usePostgres) db.Database.EnsureCreated();
     else db.Database.Migrate();
+}
+
+if (app.Environment.IsDevelopment())
+{
     app.UseSwagger();
     app.UseSwaggerUI();
 }
