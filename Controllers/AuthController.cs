@@ -23,6 +23,7 @@ public class AuthController : ControllerBase
     private readonly CurrentUser _current;
     private readonly IImageStorage _images;
     private readonly TokenService _tokens;
+    private readonly EmailSender _email;
     private readonly ILogger<AuthController> _log;
 
     public AuthController(
@@ -30,12 +31,14 @@ public class AuthController : ControllerBase
         CurrentUser current,
         IImageStorage images,
         TokenService tokens,
+        EmailSender email,
         ILogger<AuthController> log)
     {
         _db = db;
         _current = current;
         _images = images;
         _tokens = tokens;
+        _email = email;
         _log = log;
     }
 
@@ -77,11 +80,85 @@ public class AuthController : ControllerBase
             };
         }
 
+        var code = IssueOtp(user);
         _db.Users.Add(user);
         await _db.SaveChangesAsync(ct);
-        _log.LogInformation("Account {Email} registered.", user.Email);
+        await _email.SendOtpAsync(user.Email, user.FullName, code, ct);
+        _log.LogInformation("Account {Email} registered; verification code sent.", user.Email);
+
+        return Accepted(new VerificationPendingResponse
+        {
+            Email = user.Email,
+            Message = "We sent a 6-digit code to your email. Enter it to finish signing up."
+        });
+    }
+
+    /// <summary>
+    /// Confirms the OTP emailed at registration and returns the signed token.
+    /// </summary>
+    [HttpPost("verify-email")]
+    [AllowAnonymous]
+    public async Task<ActionResult<AuthResponse>> VerifyEmail(VerifyEmailRequest req, CancellationToken ct)
+    {
+        var email = req.Email.Trim().ToLowerInvariant();
+        var user = await _db.Users
+            .Include(u => u.StudentProfile)
+            .FirstOrDefaultAsync(u => u.Email == email, ct);
+        if (user is null) return Unauthorized("Incorrect code.");
+
+        if (user.EmailVerifiedAt is not null) return Issue(user); // already verified — idempotent
+
+        if (user.EmailOtpHash is null || user.EmailOtpExpiresAt < DateTime.UtcNow)
+            return BadRequest("That code has expired — request a new one.");
+
+        if (user.EmailOtpAttempts >= 5)
+            return BadRequest("Too many attempts — request a new code.");
+
+        if (!PasswordHasher.Verify(req.Code, user.EmailOtpHash))
+        {
+            user.EmailOtpAttempts++;
+            await _db.SaveChangesAsync(ct);
+            return Unauthorized("Incorrect code.");
+        }
+
+        user.EmailVerifiedAt = DateTime.UtcNow;
+        user.EmailOtpHash = null;
+        user.EmailOtpExpiresAt = null;
+        user.EmailOtpAttempts = 0;
+        await _db.SaveChangesAsync(ct);
+        _log.LogInformation("Email verified for {Email}.", user.Email);
 
         return Issue(user);
+    }
+
+    /// <summary>Emails a fresh OTP to an unverified account.</summary>
+    [HttpPost("resend-code")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ResendCode(ResendCodeRequest req, CancellationToken ct)
+    {
+        var email = req.Email.Trim().ToLowerInvariant();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
+
+        // Same response whether or not the account exists or is already verified —
+        // never reveal which emails are registered.
+        if (user is not null && user.EmailVerifiedAt is null)
+        {
+            var code = IssueOtp(user);
+            await _db.SaveChangesAsync(ct);
+            await _email.SendOtpAsync(user.Email, user.FullName, code, ct);
+        }
+        return Accepted(new { message = "If that account needs verification, a code is on its way." });
+    }
+
+    /// <summary>Stamps a fresh OTP onto the user; caller saves and emails it.</summary>
+    private static string IssueOtp(AppUser user)
+    {
+        var code = System.Security.Cryptography.RandomNumberGenerator
+            .GetInt32(0, 1_000_000).ToString("D6");
+        user.EmailOtpHash = PasswordHasher.Hash(code);
+        user.EmailOtpExpiresAt = DateTime.UtcNow.AddMinutes(10);
+        user.EmailOtpAttempts = 0;
+        return code;
     }
 
     /// <summary>Exchange email + password for a signed token.</summary>
@@ -103,6 +180,20 @@ public class AuthController : ControllerBase
         }
 
         if (!user.IsActive) return Unauthorized("This account is disabled.");
+
+        // Students must verify their email before first sign-in. A fresh code is
+        // sent here so the app can drop them straight onto the OTP screen.
+        if (user.Role == UserRole.Student && user.EmailVerifiedAt is null)
+        {
+            var code = IssueOtp(user);
+            await _db.SaveChangesAsync(ct);
+            await _email.SendOtpAsync(user.Email, user.FullName, code, ct);
+            return StatusCode(StatusCodes.Status403Forbidden, new VerificationPendingResponse
+            {
+                Email = user.Email,
+                Message = "Verify your email first — we just sent you a new code."
+            });
+        }
 
         return Issue(user);
     }

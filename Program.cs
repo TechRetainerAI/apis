@@ -94,6 +94,12 @@ builder.Services.AddScoped<PaymentService>();
 builder.Services.AddScoped<PayoutService>();
 builder.Services.AddScoped<ReferralService>();
 
+// ---------- Transactional email (SMTP) ----------
+// Unconfigured ⇒ OTPs are logged instead of emailed, keeping dev flows testable.
+builder.Services.Configure<EmailOptions>(
+    builder.Configuration.GetSection(EmailOptions.SectionName));
+builder.Services.AddSingleton<EmailSender>();
+
 // ---------- Push notifications (FCM HTTP v1) ----------
 // Without a service account configured this logs instead of sending, so the
 // rest of the app behaves identically whether or not push is wired up.

@@ -53,6 +53,22 @@ public class AppUser
 
     public bool IsActive { get; set; } = true;
 
+    /// <summary>
+    /// When the email address was proven via OTP. Null ⇒ a student account that
+    /// has not verified yet and cannot sign in. Staff accounts and users that
+    /// predate email verification are stamped at creation/migration time.
+    /// </summary>
+    public DateTime? EmailVerifiedAt { get; set; }
+
+    /// <summary>PBKDF2 hash of the current email OTP; null when none is pending.</summary>
+    [MaxLength(256)]
+    public string? EmailOtpHash { get; set; }
+
+    public DateTime? EmailOtpExpiresAt { get; set; }
+
+    /// <summary>Failed attempts against the current OTP; capped to force a resend.</summary>
+    public int EmailOtpAttempts { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 

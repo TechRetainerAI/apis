@@ -30,6 +30,30 @@ public record LoginRequest
     [Required, MaxLength(128)] public string Password { get; init; } = default!;
 }
 
+/// <summary>Body for POST /api/auth/verify-email.</summary>
+public record VerifyEmailRequest
+{
+    [Required, EmailAddress, MaxLength(256)] public string Email { get; init; } = default!;
+    [Required, MinLength(6), MaxLength(6)] public string Code { get; init; } = default!;
+}
+
+/// <summary>Body for POST /api/auth/resend-code.</summary>
+public record ResendCodeRequest
+{
+    [Required, EmailAddress, MaxLength(256)] public string Email { get; init; } = default!;
+}
+
+/// <summary>
+/// Returned by register (and unverified login) instead of a token: the account
+/// exists but the email must be verified with the OTP that was just sent.
+/// </summary>
+public record VerificationPendingResponse
+{
+    public bool RequiresVerification { get; init; } = true;
+    public string Email { get; init; } = default!;
+    public string Message { get; init; } = default!;
+}
+
 /// <summary>A signed MeDan token plus the caller's profile.</summary>
 public record AuthResponse
 {
