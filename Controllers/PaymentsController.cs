@@ -131,6 +131,15 @@ public class PaymentsController : ControllerBase
             _log.LogError(ex, "Paystack initialize failed for booking {Booking}.", booking.Id);
             return StatusCode(StatusCodes.Status502BadGateway, ex.Message);
         }
+        catch (InvalidOperationException ex)
+        {
+            // No Paystack secret key configured — a deployment gap, not a
+            // student problem. Say so plainly instead of a bare 500.
+            _log.LogError(ex, "Payments unavailable: Paystack is not configured.");
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                "Payments are not switched on yet — please try again later.");
+        }
 
         var payment = new Payment
         {
