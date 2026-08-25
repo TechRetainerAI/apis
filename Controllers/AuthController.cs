@@ -283,6 +283,33 @@ public class AuthController : ControllerBase
         return ToResponse(user);
     }
 
+    /// <summary>
+    /// Creates or updates the caller's student profile — the app's post-signup
+    /// setup wizard saves each step here.
+    /// </summary>
+    [HttpPut("me/student")]
+    public async Task<ActionResult<UserResponse>> UpdateStudent(StudentInfo req, CancellationToken ct)
+    {
+        var user = await _current.GetAsync(includeStudent: true, ct);
+        if (user is null) return NotFound("Not registered.");
+
+        var p = user.StudentProfile ?? new StudentProfile();
+        p.Course = req.Course;
+        p.Department = req.Department;
+        p.Level = req.Level;
+        p.CampusCode = req.CampusCode;
+        p.IndexNumber = req.IndexNumber;
+        p.GuardianName = req.GuardianName;
+        p.GuardianPhone = req.GuardianPhone;
+        p.GuardianRelationship = req.GuardianRelationship;
+        p.GuardianEmail = req.GuardianEmail;
+        user.StudentProfile = p;
+        user.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        return ToResponse(user);
+    }
+
     /// <summary>Change the caller's password. The current one must be supplied.</summary>
     [HttpPost("me/password")]
     public async Task<IActionResult> ChangePassword(
