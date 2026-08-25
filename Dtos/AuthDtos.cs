@@ -43,6 +43,20 @@ public record ResendCodeRequest
     [Required, EmailAddress, MaxLength(256)] public string Email { get; init; } = default!;
 }
 
+/// <summary>Body for POST /api/auth/forgot-password.</summary>
+public record ForgotPasswordRequest
+{
+    [Required, EmailAddress, MaxLength(256)] public string Email { get; init; } = default!;
+}
+
+/// <summary>Body for POST /api/auth/reset-password.</summary>
+public record ResetPasswordRequest
+{
+    [Required, EmailAddress, MaxLength(256)] public string Email { get; init; } = default!;
+    [Required, MinLength(6), MaxLength(6)] public string Code { get; init; } = default!;
+    [Required, MinLength(6), MaxLength(128)] public string NewPassword { get; init; } = default!;
+}
+
 /// <summary>
 /// Returned by register (and unverified login) instead of a token: the account
 /// exists but the email must be verified with the OTP that was just sent.

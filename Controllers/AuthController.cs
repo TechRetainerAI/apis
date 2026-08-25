@@ -150,6 +150,61 @@ public class AuthController : ControllerBase
         return Accepted(new { message = "If that account needs verification, a code is on its way." });
     }
 
+    /// <summary>
+    /// Emails a password-reset code. Same response whether or not the account
+    /// exists — never reveal which emails are registered.
+    /// </summary>
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ForgotPassword(ForgotPasswordRequest req, CancellationToken ct)
+    {
+        var email = req.Email.Trim().ToLowerInvariant();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
+        if (user is not null && user.PasswordHash is not null)
+        {
+            var code = IssueOtp(user);
+            await _db.SaveChangesAsync(ct);
+            await _email.SendOtpAsync(user.Email, user.FullName, code, ct);
+            _log.LogInformation("Password-reset code sent to {Email}.", user.Email);
+        }
+        return Accepted(new { message = "If that account exists, a reset code is on its way." });
+    }
+
+    /// <summary>Confirms the reset code and sets the new password.</summary>
+    [HttpPost("reset-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ResetPassword(ResetPasswordRequest req, CancellationToken ct)
+    {
+        var email = req.Email.Trim().ToLowerInvariant();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
+        if (user is null) return Unauthorized("Incorrect code.");
+
+        if (user.EmailOtpHash is null || user.EmailOtpExpiresAt < DateTime.UtcNow)
+            return BadRequest("That code has expired — request a new one.");
+        if (user.EmailOtpAttempts >= 5)
+            return BadRequest("Too many attempts — request a new code.");
+
+        if (!PasswordHasher.Verify(req.Code, user.EmailOtpHash))
+        {
+            user.EmailOtpAttempts++;
+            await _db.SaveChangesAsync(ct);
+            return Unauthorized("Incorrect code.");
+        }
+
+        user.PasswordHash = PasswordHasher.Hash(req.NewPassword);
+        // Entering the emailed code proves ownership, so an unverified account
+        // that resets its password is verified by the same act.
+        user.EmailVerifiedAt ??= DateTime.UtcNow;
+        user.EmailOtpHash = null;
+        user.EmailOtpExpiresAt = null;
+        user.EmailOtpAttempts = 0;
+        user.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        _log.LogInformation("Password reset for {Email}.", user.Email);
+
+        return NoContent();
+    }
+
     /// <summary>Stamps a fresh OTP onto the user; caller saves and emails it.</summary>
     private static string IssueOtp(AppUser user)
     {
