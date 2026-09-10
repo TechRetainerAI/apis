@@ -2,3 +2,11 @@ bin/
 obj/
 *.user
 appsettings.*.local.json
+
+# Local SQLite dev database and its journal files — never deploy these.
+medan.dev.db
+medan.dev.db-shm
+medan.dev.db-wal
+
+# Local-only environment file (Render env vars are set in the dashboard).
+render.env
