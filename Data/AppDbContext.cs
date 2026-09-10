@@ -28,6 +28,12 @@ public class AppDbContext : DbContext
     public DbSet<CampusEvent> Events => Set<CampusEvent>();
     public DbSet<UserNotification> Notifications => Set<UserNotification>();
 
+    // Filtered-index predicates are raw SQL, so they carry the provider's own
+    // identifier quoting: SQL Server (and SQLite) accept [brackets], Postgres
+    // only accepts "quotes".
+    private string NotNullFilter(string column) =>
+        Database.IsNpgsql() ? $"\"{column}\" IS NOT NULL" : $"[{column}] IS NOT NULL";
+
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
@@ -36,10 +42,10 @@ public class AppDbContext : DbContext
         b.Entity<AppUser>(e =>
         {
             // Filtered: staff accounts have no Firebase UID and must not collide on NULL.
-            e.HasIndex(u => u.FirebaseUid).IsUnique().HasFilter("[FirebaseUid] IS NOT NULL");
+            e.HasIndex(u => u.FirebaseUid).IsUnique().HasFilter(NotNullFilter("FirebaseUid"));
             e.HasIndex(u => u.Email).IsUnique();
             // Filtered: users without a code yet must not collide on NULL.
-            e.HasIndex(u => u.ReferralCode).IsUnique().HasFilter("[ReferralCode] IS NOT NULL");
+            e.HasIndex(u => u.ReferralCode).IsUnique().HasFilter(NotNullFilter("ReferralCode"));
             e.Property(u => u.Role).HasConversion<string>();
         });
 
@@ -300,7 +306,7 @@ public class AppDbContext : DbContext
             e.HasIndex(r => r.Code);
             e.HasIndex(r => new { r.ReferrerUserId, r.CreatedAt });
             // A user can only ever be referred once.
-            e.HasIndex(r => r.RefereeUserId).IsUnique().HasFilter("[RefereeUserId] IS NOT NULL");
+            e.HasIndex(r => r.RefereeUserId).IsUnique().HasFilter(NotNullFilter("RefereeUserId"));
             e.HasOne(r => r.Referrer)
                 .WithMany()
                 .HasForeignKey(r => r.ReferrerUserId)
