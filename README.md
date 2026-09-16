@@ -50,10 +50,14 @@ everything works locally.
 > owner's own address** — every other recipient is rejected with `403 validation_error`, so
 > real students get a 503 and no code. This is the single most likely reason OTPs don't arrive.
 
-**Verify `send.medan.app`, not `medan.app`.** The root domain runs Zoho Mail, and a domain may
-only carry one SPF record — adding Resend at the root risks breaking Zoho. A sending subdomain
-keeps the two independent, and is Resend's own recommendation when a domain already has mail on
-it. The records to add at GoDaddy all sit under `send`, so no existing record is touched.
+**Verify `send.medanadmin.com`, not `medanadmin.com`.** The root domain's MX points at Google
+Workspace (`smtp.google.com`), and a domain may only carry one SPF record — adding Resend at the
+root risks breaking Workspace mail. A sending subdomain keeps the two independent, and is
+Resend's own recommendation when a domain already has mail on it.
+
+DNS for `medanadmin.com` is at **Namecheap** (Domain List → Manage → Advanced DNS). Namecheap
+appends the domain to whatever you type in *Host*, so enter `resend._domainkey.send` — not the
+fully-qualified name Resend displays. Every record sits under `send`, so nothing existing moves.
 
 ```bash
 # Local dev — the key never goes in appsettings.json
@@ -76,6 +80,11 @@ then create one at [myaccount.google.com/apppasswords](https://myaccount.google.
 Port must be **587** — 465 times out (the code rejects it up front rather than hanging). Gmail
 caps around 500 messages/day and its deliverability into other inboxes is weaker than a verified
 domain's, so treat it as the stopgap and finish the Resend domain setup when you can.
+
+> **On Render, SMTP is not an option.** This API is deployed there (`medanadmin.com` resolves to
+> `ingress.render.com`), and Render blocks outbound SMTP on free instances — ports 25, 465 and
+> 587 — so Gmail fails in production even when it works locally. Resend's HTTPS API is not
+> affected by that block, which is why it is the supported path here.
 
 Resend's default rate limit is 2 requests/second; a `429` is retried once before the send is
 reported failed.
