@@ -52,38 +52,45 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<AuthResponse>> Register(RegisterRequest req, CancellationToken ct)
     {
         var email = req.Email.Trim().ToLowerInvariant();
-        if (await _db.Users.AnyAsync(u => u.Email == email, ct))
+
+        // An account that exists but was never verified is a half-finished sign-up,
+        // usually because the first code never arrived. Let the details be
+        // re-submitted and re-send the code instead of walling the user off with a
+        // 409 they can do nothing about. A *verified* account still conflicts.
+        var existing = await _db.Users
+            .Include(u => u.StudentProfile)
+            .FirstOrDefaultAsync(u => u.Email == email, ct);
+        if (existing is not null && existing.EmailVerifiedAt is not null)
             return Conflict("An account with that email already exists.");
 
-        var user = new AppUser
-        {
-            Email = email,
-            FullName = req.Name.Trim(),
-            Phone = req.Phone,
-            Role = UserRole.Student,
-            PasswordHash = PasswordHasher.Hash(req.Password)
-        };
+        var user = existing ?? new AppUser { Email = email, Role = UserRole.Student };
+        user.FullName = req.Name.Trim();
+        user.Phone = req.Phone;
+        user.PasswordHash = PasswordHasher.Hash(req.Password);
+        if (existing is not null) user.UpdatedAt = DateTime.UtcNow;
 
         if (req.Student is { } s)
         {
-            user.StudentProfile = new StudentProfile
-            {
-                Course = s.Course,
-                Department = s.Department,
-                Level = s.Level,
-                CampusCode = s.CampusCode,
-                IndexNumber = s.IndexNumber,
-                GuardianName = s.GuardianName,
-                GuardianPhone = s.GuardianPhone,
-                GuardianRelationship = s.GuardianRelationship,
-                GuardianEmail = s.GuardianEmail
-            };
+            user.StudentProfile ??= new StudentProfile();
+            var profile = user.StudentProfile;
+            profile.Course = s.Course;
+            profile.Department = s.Department;
+            profile.Level = s.Level;
+            profile.CampusCode = s.CampusCode;
+            profile.IndexNumber = s.IndexNumber;
+            profile.GuardianName = s.GuardianName;
+            profile.GuardianPhone = s.GuardianPhone;
+            profile.GuardianRelationship = s.GuardianRelationship;
+            profile.GuardianEmail = s.GuardianEmail;
         }
 
         var code = IssueOtp(user);
-        _db.Users.Add(user);
+        if (existing is null) _db.Users.Add(user);
         await _db.SaveChangesAsync(ct);
-        await _email.SendOtpAsync(user.Email, user.FullName, code, ct);
+
+        if (!await _email.SendOtpAsync(user.Email, user.FullName, code, ct))
+            return OtpUndeliverable();
+
         _log.LogInformation("Account {Email} registered; verification code sent.", user.Email);
 
         return Accepted(new VerificationPendingResponse
@@ -91,6 +98,18 @@ public class AuthController : ControllerBase
             Email = user.Email,
             Message = "We sent a 6-digit code to your email. Enter it to finish signing up."
         });
+    }
+
+    /// <summary>
+    /// The code could not be handed to the mail provider. Saying so beats a 202
+    /// that leaves the app waiting on an OTP screen for a code that never comes;
+    /// the account row survives, so a retry picks up where this left off.
+    /// </summary>
+    private ObjectResult OtpUndeliverable()
+    {
+        _log.LogError("Verification code could not be emailed — see the EmailSender error above.");
+        return StatusCode(StatusCodes.Status503ServiceUnavailable,
+            "We couldn't send your verification code right now. Please try again in a moment.");
     }
 
     /// <summary>
@@ -136,6 +155,10 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> ResendCode(ResendCodeRequest req, CancellationToken ct)
     {
+        // Checked before the lookup so a broken mail transport answers the same
+        // way for every address — a 503 here says nothing about who is registered.
+        if (!_email.IsConfigured) return OtpUndeliverable();
+
         var email = req.Email.Trim().ToLowerInvariant();
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
 
@@ -145,7 +168,8 @@ public class AuthController : ControllerBase
         {
             var code = IssueOtp(user);
             await _db.SaveChangesAsync(ct);
-            await _email.SendOtpAsync(user.Email, user.FullName, code, ct);
+            if (!await _email.SendOtpAsync(user.Email, user.FullName, code, ct))
+                return OtpUndeliverable();
         }
         return Accepted(new { message = "If that account needs verification, a code is on its way." });
     }
@@ -158,13 +182,16 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> ForgotPassword(ForgotPasswordRequest req, CancellationToken ct)
     {
+        if (!_email.IsConfigured) return OtpUndeliverable();
+
         var email = req.Email.Trim().ToLowerInvariant();
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
         if (user is not null && user.PasswordHash is not null)
         {
             var code = IssueOtp(user);
             await _db.SaveChangesAsync(ct);
-            await _email.SendOtpAsync(user.Email, user.FullName, code, ct);
+            if (!await _email.SendOtpAsync(user.Email, user.FullName, code, ct))
+                return OtpUndeliverable();
             _log.LogInformation("Password-reset code sent to {Email}.", user.Email);
         }
         return Accepted(new { message = "If that account exists, a reset code is on its way." });
@@ -242,7 +269,9 @@ public class AuthController : ControllerBase
         {
             var code = IssueOtp(user);
             await _db.SaveChangesAsync(ct);
-            await _email.SendOtpAsync(user.Email, user.FullName, code, ct);
+            if (!await _email.SendOtpAsync(user.Email, user.FullName, code, ct))
+                return OtpUndeliverable();
+
             return StatusCode(StatusCodes.Status403Forbidden, new VerificationPendingResponse
             {
                 Email = user.Email,

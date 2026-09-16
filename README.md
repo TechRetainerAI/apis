@@ -22,6 +22,70 @@ Edit `appsettings.json` (or use environment variables / user-secrets):
 > `Firebase:ProjectId` must match the Flutter app's Firebase project, or token validation fails.
 > For a full SQL Server instance use e.g. `Server=localhost;Database=medan;User Id=sa;Password=...;TrustServerCertificate=True`.
 
+### Email (verification OTPs) — required in production
+
+Registration, sign-in for an unverified student, `resend-code` and `forgot-password` all
+email a 6-digit code. **With no transport configured these endpoints return `503`** outside
+Development, and the API logs an error at startup — nobody can sign up until this is set.
+
+Two transports. **`Email:ApiKey` (Resend) wins whenever it is set** — leave a stale key behind
+and your SMTP settings are silently ignored, so clear it to send over SMTP. Startup logs which
+transport it picked (`Email transport: …`) and warns when both are configured.
+
+| Key | Meaning |
+|-----|---------|
+| `Email:ApiKey` | Resend API key (`re_…`). Set ⇒ mail goes over **HTTPS** |
+| `Email:ApiUrl` | Resend's endpoint (default `https://api.resend.com/emails`) |
+| `Email:Host` / `Port` / `User` / `Password` | SMTP, used only when `ApiKey` is empty. Port must be **587** — 465 is implicit TLS, which `SmtpClient` cannot speak |
+| `Email:From` | Sender address; falls back to `Email:User`. Required for the HTTP transport |
+| `Email:FromName` | Display name (default `MeDan`) |
+| `Email:TimeoutSeconds` | SMTP timeout (default 20) |
+
+**Prefer Resend in production.** Container hosts (Render, Cloud Run, Fly) commonly block or
+throttle outbound SMTP, which is the usual reason codes stop arriving after a deploy while
+everything works locally.
+
+> ⚠️ **`Email:From` must be on a domain verified at [resend.com/domains](https://resend.com/domains).**
+> Resend's sandbox sender `onboarding@resend.dev` delivers **only to the Resend account
+> owner's own address** — every other recipient is rejected with `403 validation_error`, so
+> real students get a 503 and no code. This is the single most likely reason OTPs don't arrive.
+
+**Verify `send.medan.app`, not `medan.app`.** The root domain runs Zoho Mail, and a domain may
+only carry one SPF record — adding Resend at the root risks breaking Zoho. A sending subdomain
+keeps the two independent, and is Resend's own recommendation when a domain already has mail on
+it. The records to add at GoDaddy all sit under `send`, so no existing record is touched.
+
+```bash
+# Local dev — the key never goes in appsettings.json
+dotnet user-secrets set "Email:ApiKey" "re_xxxxxxxx"
+dotnet user-secrets set "Email:From"   "no-reply@yourdomain.com"
+
+# Production (Render/Cloud Run env vars — user-secrets only load in Development)
+Email__ApiKey=re_xxxxxxxx
+Email__From=no-reply@yourdomain.com
+
+# Or SMTP instead — make sure Email__ApiKey is EMPTY, or this is ignored
+Email__Host=smtp.gmail.com
+Email__Port=587
+Email__User=you@gmail.com
+Email__Password=<16-char app password>
+```
+
+**Gmail SMTP** needs an *app password*, not the account password: turn on 2-Step Verification,
+then create one at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+Port must be **587** — 465 times out (the code rejects it up front rather than hanging). Gmail
+caps around 500 messages/day and its deliverability into other inboxes is weaker than a verified
+domain's, so treat it as the stopgap and finish the Resend domain setup when you can.
+
+Resend's default rate limit is 2 requests/second; a `429` is retried once before the send is
+reported failed.
+
+**Development** needs no mail account: the OTP is printed to the API console (look for
+`Email not configured — would have sent verification code to …`) and sign-up proceeds normally.
+
+*Codes never appear in logs when a transport is configured* — the code is in the subject line,
+so log messages use a fixed label instead.
+
 ### Paystack
 The secret key **never goes in `appsettings.json`**:
 

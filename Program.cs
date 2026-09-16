@@ -94,11 +94,13 @@ builder.Services.AddScoped<PaymentService>();
 builder.Services.AddScoped<PayoutService>();
 builder.Services.AddScoped<ReferralService>();
 
-// ---------- Transactional email (SMTP) ----------
-// Unconfigured ⇒ OTPs are logged instead of emailed, keeping dev flows testable.
+// ---------- Transactional email (HTTP provider, or SMTP) ----------
+// Unconfigured ⇒ Development logs the OTP to the console, keeping local sign-up
+// testable; anywhere else the send reports failure so the caller returns 503
+// rather than telling the user a code is on its way that never arrives.
 builder.Services.Configure<EmailOptions>(
     builder.Configuration.GetSection(EmailOptions.SectionName));
-builder.Services.AddSingleton<EmailSender>();
+builder.Services.AddHttpClient<EmailSender>();
 
 // ---------- Push notifications (FCM HTTP v1) ----------
 // Without a service account configured this logs instead of sending, so the
@@ -153,6 +155,30 @@ var app = builder.Build();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     if (useSqlite || usePostgres) db.Database.EnsureCreated();
     else db.Database.Migrate();
+}
+
+// Say it once, at startup, rather than leaving it to be discovered one stranded
+// sign-up at a time: with no mail transport nobody outside Development can
+// register, because the verification code has nowhere to go.
+{
+    var email = app.Services.GetRequiredService<EmailSender>();
+    if (email.IsConfigured)
+    {
+        app.Logger.LogInformation("Email transport: {Transport}", email.TransportDescription);
+
+        // Both filled in means the SMTP settings are dead config. Better to say so
+        // than to let someone debug a Gmail account that is never dialled.
+        if (email.HasUnusedSmtpConfig)
+            app.Logger.LogWarning(
+                "Both Email:ApiKey and Email:Host are set — Resend wins and the SMTP " +
+                "settings are ignored. Clear Email:ApiKey to send over SMTP.");
+    }
+    else if (!app.Environment.IsDevelopment())
+    {
+        app.Logger.LogError(
+            "Email is not configured — registration will fail with 503. " +
+            "Set Email__ApiKey + Email__From (recommended), or Email__Host/Port/User/Password.");
+    }
 }
 
 if (app.Environment.IsDevelopment())
