@@ -56,7 +56,8 @@ public class RoomsController : ControllerBase
             RoomType = req.Type,
             Capacity = req.Capacity,
             AvailableBeds = req.Capacity,
-            PricePerBedPerSemester = req.PricePerSemester,
+            // The owner types their asking price; students see it plus MeDan's 5%.
+            PricePerBedPerSemester = Pricing.WithMarkup(req.PricePerSemester),
             Gender = req.Gender,
             Floor = req.Floor,
             Status = RoomStatus.Available

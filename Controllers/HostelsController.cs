@@ -213,8 +213,11 @@ public class HostelsController : ControllerBase
             Latitude = req.Lat,
             Longitude = req.Lng,
             DistanceKm = req.DistanceKm,
-            MinPrice = req.MinPrice,
-            MaxPrice = req.MaxPrice,
+            // Asking prices from the owner; shown to students with MeDan's 5% on
+            // top, same as room prices — otherwise the card and the room list
+            // would disagree once rooms are added.
+            MinPrice = Pricing.WithMarkup(req.MinPrice),
+            MaxPrice = Pricing.WithMarkup(req.MaxPrice),
             ContactPhone = req.ContactPhone,
             PostedByUserId = me.Id
         };
@@ -266,6 +269,8 @@ public class HostelsController : ControllerBase
         hostel.Latitude = req.Lat;
         hostel.Longitude = req.Lng;
         hostel.DistanceKm = req.DistanceKm;
+        // No Pricing.WithMarkup here, unlike Create: the edit form round-trips the
+        // LISTED prices (markup already in), so applying it again would compound.
         hostel.MinPrice = req.MinPrice;
         hostel.MaxPrice = req.MaxPrice;
         hostel.ContactPhone = req.ContactPhone;

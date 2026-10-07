@@ -157,7 +157,12 @@ public class BookingsController : ControllerBase
 
         var company = await _db.Companies.FirstAsync(c => c.Id == room.Hostel.CompanyId, ct);
         var amount = room.PricePerBedPerSemester;
-        var commission = (int)Math.Round(amount * company.CommissionRate, MidpointRounding.AwayFromZero);
+        // The listed price already carries MeDan's 5% on top of the owner's
+        // asking price (Pricing.WithMarkup at listing time), so the platform's
+        // cut is the share embedded in what the student pays — not a deduction
+        // from the owner, whose payout stays their full asking price. The old
+        // tier-based CommissionRate no longer applies here.
+        var commission = Pricing.PlatformShare(amount);
 
         var booking = new Booking
         {
