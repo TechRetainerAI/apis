@@ -156,11 +156,32 @@ var app = builder.Build();
 // Bootstrap the schema on startup. The committed migration history is SQL
 // Server-specific, so SQLite and Postgres create the schema straight from the
 // model (HasData seeds included) — a no-op once the database exists.
+//
+// "A no-op once the database exists" is the sharp edge: EnsureCreated() does not
+// notice that a release added a property, while EF goes on naming every mapped
+// column in its SELECTs. A new column therefore breaks reads of the whole table,
+// not just writes of the new feature. PostgresSchemaSync closes that gap on the
+// one deployed provider that runs this way.
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     if (useSqlite || usePostgres) db.Database.EnsureCreated();
     else db.Database.Migrate();
+
+    if (usePostgres)
+    {
+        var syncLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("SchemaSync");
+        try
+        {
+            await PostgresSchemaSync.ApplyAsync(db, syncLog);
+        }
+        catch (Exception ex)
+        {
+            // A half-reconciled schema is bad; an API that will not boot is worse,
+            // and this runs before anyone can be served. Shout and carry on.
+            syncLog.LogError(ex, "Schema sync failed. The database may be behind the model.");
+        }
+    }
 }
 
 // Say it once, at startup, rather than leaving it to be discovered one stranded
