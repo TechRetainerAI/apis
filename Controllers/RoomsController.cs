@@ -75,6 +75,99 @@ public class RoomsController : ControllerBase
     }
 
     /// <summary>
+    /// Edit a room after it is listed — the manage screen's save. Owner/worker, or
+    /// platform staff.
+    ///
+    /// The price is stored exactly as sent: it is the LISTED price the edit form
+    /// loaded, with MeDan's 5% already inside it, so re-applying the markup here
+    /// would compound it on every save. Create is where the markup goes on, once.
+    /// </summary>
+    [HttpPut("{roomId:guid}")]
+    [Authorize]
+    public async Task<ActionResult<RoomSummary>> Update(
+        Guid hostelId, Guid roomId, UpdateRoomRequest req, CancellationToken ct)
+    {
+        var hostel = await _db.Hostels
+            .Include(h => h.Company).ThenInclude(c => c.Members)
+            .FirstOrDefaultAsync(h => h.Id == hostelId, ct);
+        if (hostel is null) return NotFound("Hostel not found.");
+        if (!await CanManage(hostel, ct)) return Forbid();
+
+        var room = await _db.Rooms
+            .Include(r => r.Beds)
+            .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
+        if (room is null) return NotFound("Room not found.");
+
+        // Reconcile beds against a local list rather than room.Beds. EF's relationship
+        // fixup puts a newly added bed into that navigation by itself, so adding to it
+        // here as well counts every new bed twice — and the inflated number is what
+        // AvailableBeds would be saved as.
+        var beds = room.Beds.ToList();
+
+        // Shrinking can only give up beds nobody holds. Students already in the room
+        // keep theirs, and the save is refused rather than quietly leaving the room
+        // over capacity.
+        if (req.Capacity < beds.Count)
+        {
+            var free = beds.Count(b => b.Status == BedStatus.Available);
+            var surplus = beds.Count - req.Capacity;
+            if (free < surplus)
+                return Conflict(
+                    $"Can't reduce to {req.Capacity} bed(s): only {free} of " +
+                    $"{beds.Count} are free. Beds that are booked or occupied " +
+                    "have to be released first.");
+
+            foreach (var bed in beds
+                         .Where(b => b.Status == BedStatus.Available)
+                         .OrderByDescending(b => b.Label)
+                         .Take(surplus)
+                         .ToList())
+            {
+                beds.Remove(bed);
+                room.Beds.Remove(bed);
+                _db.Remove(bed);
+            }
+        }
+        else if (req.Capacity > beds.Count)
+        {
+            // Continue the lettering rather than restarting it, so labels stay unique.
+            for (var i = beds.Count; i < req.Capacity; i++)
+            {
+                var bed = new Bed
+                {
+                    RoomId = room.Id,
+                    Label = $"Bed {(char)('A' + i)}",
+                    Status = BedStatus.Available
+                };
+
+                // Added explicitly. Unlike Create, the room here is already tracked, and
+                // Bed initialises its own Id — EF reads that as an existing row and
+                // issues an UPDATE that matches nothing ("expected to affect 1 row(s),
+                // but actually affected 0") instead of inserting the bed.
+                _db.Beds.Add(bed);
+                beds.Add(bed);
+            }
+        }
+
+        room.Label = req.Label;
+        room.RoomType = req.Type;
+        room.Capacity = req.Capacity;
+        room.Gender = req.Gender;
+        room.PricePerBedPerSemester = req.PricePerSemester;
+        if (req.Floor is not null) room.Floor = req.Floor;
+
+        // Kept in step with the bed rows, which are the real source of availability.
+        room.AvailableBeds = room.Beds.Count(b => b.Status == BedStatus.Available);
+
+        await _db.SaveChangesAsync(ct);
+
+        // A price or capacity change moves the hostel's advertised range.
+        await RefreshHostelPriceRange(hostelId, ct);
+
+        return ToSummary(room);
+    }
+
+    /// <summary>
     /// Take a room off the market or put it back (owner/worker, or platform staff).
     /// Bed availability is untouched — this is the room-level switch the manager
     /// dashboard uses to flag maintenance.
