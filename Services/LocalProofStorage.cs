@@ -34,8 +34,14 @@ public class LocalProofStorage : IProofStorage
 
     public LocalProofStorage(IWebHostEnvironment env, IConfiguration config)
     {
+        _root = ResolveRoot(env, config);
+    }
+
+    /// <summary>Where proofs are written. Also read at startup to warn about ephemeral disks.</summary>
+    public static string ResolveRoot(IWebHostEnvironment env, IConfiguration config)
+    {
         var configured = config["ManualPayment:ProofRoot"];
-        _root = string.IsNullOrWhiteSpace(configured)
+        return string.IsNullOrWhiteSpace(configured)
             ? Path.Combine(env.ContentRootPath, "storage", "payment-proofs")
             : configured;
     }

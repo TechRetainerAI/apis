@@ -220,6 +220,42 @@ app.UseStaticFiles(new StaticFileOptions
     FileProvider = new PhysicalFileProvider(webRoot)
 });
 
+// Then /uploads from the upload root, which a deployment points at a mounted disk
+// so owners' photos outlive the container. Registered second so the demo images
+// committed under wwwroot/uploads still win; anything uploaded since is found here.
+// Same path LocalImageStorage writes to — they read one setting so they cannot
+// disagree, which would 404 every upload.
+var uploadRoot = MeDan.Api.Services.LocalImageStorage.ResolveRoot(app.Environment, app.Configuration);
+Directory.CreateDirectory(uploadRoot);
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(uploadRoot),
+    RequestPath = "/uploads"
+});
+
+// Say both of these at startup rather than leaving them to be found as a wall of
+// 404s weeks later, or — worse — as a missing receipt for a payment somebody
+// already approved.
+if (!app.Environment.IsDevelopment())
+{
+    var contentRoot = Path.GetFullPath(app.Environment.ContentRootPath);
+    var proofRoot = MeDan.Api.Services.LocalProofStorage.ResolveRoot(app.Environment, app.Configuration);
+
+    if (Path.GetFullPath(uploadRoot).StartsWith(contentRoot, StringComparison.OrdinalIgnoreCase))
+        app.Logger.LogWarning(
+            "Uploads are being written inside the app directory ({Root}). On a host with an " +
+            "ephemeral filesystem every uploaded photo is erased on the next deploy, while the " +
+            "database keeps serving its URL. Set Storage__UploadRoot to a mounted disk.",
+            uploadRoot);
+
+    if (Path.GetFullPath(proofRoot).StartsWith(contentRoot, StringComparison.OrdinalIgnoreCase))
+        app.Logger.LogError(
+            "Payment proofs are being written inside the app directory ({Root}) and will be " +
+            "erased on the next deploy. These are the only evidence behind an approved manual " +
+            "payment. Set ManualPayment__ProofRoot to a mounted disk.",
+            proofRoot);
+}
+
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();

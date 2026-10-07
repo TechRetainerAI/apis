@@ -131,6 +131,34 @@ without a release:
 | `ManualPayment:Instructions` | Optional line of guidance under the wallet details |
 | `ManualPayment:ProofRoot` | Where screenshots are written. Empty ⇒ `<contentRoot>/storage/payment-proofs` |
 
+### File storage — required on any host with an ephemeral disk
+Render (and most container hosts) throw the container's filesystem away on every deploy and
+restart. Anything written inside the app directory goes with it, while the database keeps
+serving URLs whose files no longer exist — a wall of 404s for hostel photos, and for a manual
+payment the loss of the only evidence behind a transfer somebody already approved.
+
+Mount a disk and point both roots at it:
+
+| Key | Meaning |
+|-----|---------|
+| `Storage:UploadRoot` | Where `/uploads/…` is written **and** served from. Empty ⇒ `wwwroot/uploads` |
+| `ManualPayment:ProofRoot` | Where payment screenshots are written. Empty ⇒ `<contentRoot>/storage/payment-proofs` |
+
+On Render: add a disk (say mount path `/var/data`), then set
+
+```
+Storage__UploadRoot=/var/data/uploads
+ManualPayment__ProofRoot=/var/data/payment-proofs
+```
+
+Outside Development the API logs a warning (uploads) and an error (proofs) at startup when
+either root still sits inside the app directory. A disk also pins the service to a single
+instance — when you outgrow that, swap `LocalImageStorage`/`LocalProofStorage` for S3/R2
+behind the same interfaces rather than scaling with a disk attached.
+
+The demo images committed under `wwwroot/uploads` keep working either way: `/uploads` is
+served from `wwwroot` first and the upload root second.
+
 **Screenshots are not public files.** They hold the student's name, number and balance, so
 they are written *outside* `wwwroot` and served only by `GET /api/payments/{ref}/proof`,
 which admits the student who uploaded it and platform staff — nobody else. `storage/` is
