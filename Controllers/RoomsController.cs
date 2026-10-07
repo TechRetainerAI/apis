@@ -168,6 +168,38 @@ public class RoomsController : ControllerBase
     }
 
     /// <summary>
+    /// Remove a room that was never booked. Any booking — past or active — pins
+    /// the room (FK Restrict; students' booking history must keep pointing at a
+    /// real room), so those return 409: maintenance status is how a once-booked
+    /// room leaves the market. Beds cascade with the room.
+    /// </summary>
+    [HttpDelete("{roomId:guid}")]
+    [Authorize]
+    public async Task<IActionResult> Delete(Guid hostelId, Guid roomId, CancellationToken ct)
+    {
+        var hostel = await _db.Hostels
+            .Include(h => h.Company).ThenInclude(c => c.Members)
+            .FirstOrDefaultAsync(h => h.Id == hostelId, ct);
+        if (hostel is null) return NotFound("Hostel not found.");
+        if (!await CanManage(hostel, ct)) return Forbid();
+
+        var room = await _db.Rooms
+            .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
+        if (room is null) return NotFound("Room not found.");
+
+        if (await _db.Bookings.AnyAsync(b => b.RoomId == roomId, ct))
+            return Conflict(
+                "This room has bookings (past or active) and can't be deleted. " +
+                "Set it to maintenance to take it off the market instead.");
+
+        _db.Rooms.Remove(room);
+        await _db.SaveChangesAsync(ct);
+
+        await RefreshHostelPriceRange(hostelId, ct);
+        return NoContent();
+    }
+
+    /// <summary>
     /// Take a room off the market or put it back (owner/worker, or platform staff).
     /// Bed availability is untouched — this is the room-level switch the manager
     /// dashboard uses to flag maintenance.
