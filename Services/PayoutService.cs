@@ -115,6 +115,26 @@ public class PayoutService
             return payout;
         }
 
+        // A manual transfer never passed through Paystack, so there is no charge to
+        // reverse — asking them to refund this reference would just error. Leave it
+        // Pending and say what has to happen: support sends the money back by hand.
+        var channel = await _db.Payments
+            .Where(p => p.BookingId == booking.Id)
+            .Select(p => (PaymentChannel?)p.Channel)
+            .FirstOrDefaultAsync(ct);
+
+        if (channel == PaymentChannel.ManualMomo)
+        {
+            payout.FailureReason =
+                "Paid by manual Mobile Money transfer — refund this one by sending " +
+                $"GH₵{payout.Amount} back to the student's wallet, then mark it settled.";
+            await _db.SaveChangesAsync(ct);
+            _log.LogWarning(
+                "Booking {Booking} needs a manual refund of GH₵{Amount}; no Paystack charge exists.",
+                booking.Id, payout.Amount);
+            return payout;
+        }
+
         payout.Attempts++;
         payout.LastAttemptAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);

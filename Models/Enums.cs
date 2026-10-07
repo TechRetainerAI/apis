@@ -69,7 +69,13 @@ public enum PaymentChannel
 {
     MomoMtn = 0,
     MomoTelecel = 1,
-    Card = 2
+    Card = 2,
+
+    /// <summary>
+    /// Student sent Mobile Money to the platform wallet by hand and uploaded a
+    /// screenshot. No provider confirms this one — platform staff do.
+    /// </summary>
+    ManualMomo = 3
 }
 
 public enum PaymentStatus
@@ -77,7 +83,13 @@ public enum PaymentStatus
     Initialized = 0,
     Success = 1,
     Failed = 2,
-    Abandoned = 3
+    Abandoned = 3,
+
+    /// <summary>Manual transfer submitted with proof, waiting on staff review.</summary>
+    PendingReview = 4,
+
+    /// <summary>Staff did not accept the proof. The student may submit again.</summary>
+    Rejected = 5
 }
 
 /// <summary>Subscription tier of a hostel business (drives commission + listing limits).</summary>

@@ -117,6 +117,26 @@ Paystack's webhook at `POST /api/payments/webhook`; it checks the `x-paystack-si
 HMAC-SHA512 over the raw body, then **re-verifies the reference with Paystack** rather than
 trusting the payload's amounts.
 
+### Manual Mobile Money (pay by hand + upload proof)
+For students who send MoMo to the platform wallet themselves instead of paying in the app.
+These are plain config — no secret — so they can sit in `appsettings.json` and change
+without a release:
+
+| Key | Meaning |
+|-----|---------|
+| `ManualPayment:Enabled` | `false` forces everyone through Paystack |
+| `ManualPayment:WalletNumber` | The wallet students send to, e.g. `0559960788` |
+| `ManualPayment:WalletName` | Registered name, e.g. `CY TECHNOLOGIES AND CONSULTING` |
+| `ManualPayment:WalletType` | Shown as the payment type, e.g. `MoMo wallet` |
+| `ManualPayment:Instructions` | Optional line of guidance under the wallet details |
+| `ManualPayment:ProofRoot` | Where screenshots are written. Empty ⇒ `<contentRoot>/storage/payment-proofs` |
+
+**Screenshots are not public files.** They hold the student's name, number and balance, so
+they are written *outside* `wwwroot` and served only by `GET /api/payments/{ref}/proof`,
+which admits the student who uploaded it and platform staff — nobody else. `storage/` is
+gitignored. On a host with an ephemeral filesystem, point `ProofRoot` at a mounted disk or
+the proofs vanish on redeploy.
+
 ## Run
 ```bash
 # 1. SQL Server LocalDB ships with Visual Studio / the SQL Server Express tools.
@@ -225,6 +245,34 @@ Verify and the webhook are **idempotent** and race-safe: whichever lands first a
 booking, the other is a no-op. A reference that settled for less than the booking price is
 rejected, not held. `Payment` is 1:1 with a booking — re-initializing replaces a stale
 attempt, but a successful one is final.
+
+**Paying by hand** (`PaymentsController` + `AdminController` → `PaymentService`):
+```
+GET  /api/payments/manual/instructions?bookingId=…  → wallet number, name, amount
+POST /api/payments/manual/submit                    → multipart: proof image + transactionId
+                                                      Payment PendingReview, booking stays Pending
+GET  /api/payments/{ref}/proof                      → the screenshot (uploader or staff only)
+POST /api/admin/payments/manual/{ref}/approve       → PaymentService.ApproveManualAsync →
+                                                      Payment Success + booking PaymentHeld
+POST /api/admin/payments/manual/{ref}/reject        → Payment Rejected + reason; bed stays held
+```
+Nothing here advances a booking on its own — a submission only parks evidence. Approval goes
+through the **same** `HoldAsync` transition as a verified Paystack charge, so the two routes
+cannot drift. Staff stand in for the provider, so the reviewer's id and timestamp are written
+to the payment row. A rejected student can submit again; their bed is never released by a
+rejection, and the superseded screenshot is deleted.
+
+Reusing the transaction ID of an **approved** transfer on another booking is refused outright
+(409). Other collisions are surfaced to the reviewer as `duplicateOf` rather than blocked —
+a rejected attempt and its corrected resubmission legitimately share an ID.
+
+`GET /api/admin/payments/manual` is the queue, oldest first; pass `?status=success|rejected`
+to see settled ones.
+
+⚠️ **Refunds**: a manual transfer never passed through Paystack, so there is no charge to
+reverse. `PayoutService.RefundAsync` detects this, refuses to call Paystack with a reference
+it has never seen, and leaves the payout `Pending` with a note telling support to send the
+money back by hand.
 
 **Refer & Earn** (`ReferralsController` → `ReferralService`):
 ```

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using MeDan.Api.Auth;
 using MeDan.Api.Data;
 using MeDan.Api.Dtos;
@@ -29,6 +30,9 @@ public class PaymentsController : ControllerBase
     private readonly CurrentUser _current;
     private readonly IPaystackClient _paystack;
     private readonly PaymentService _payments;
+    private readonly IProofStorage _proofs;
+    private readonly BookingNotifier _notify;
+    private readonly ManualPaymentOptions _manual;
     private readonly ILogger<PaymentsController> _log;
 
     public PaymentsController(
@@ -36,12 +40,18 @@ public class PaymentsController : ControllerBase
         CurrentUser current,
         IPaystackClient paystack,
         PaymentService payments,
+        IProofStorage proofs,
+        BookingNotifier notify,
+        IOptions<ManualPaymentOptions> manual,
         ILogger<PaymentsController> log)
     {
         _db = db;
         _current = current;
         _paystack = paystack;
         _payments = payments;
+        _proofs = proofs;
+        _notify = notify;
+        _manual = manual.Value;
         _log = log;
     }
 
@@ -296,6 +306,174 @@ public class PaymentsController : ControllerBase
         return ToResponse(payment, payment.Booking, _paystack.IsSimulated);
     }
 
+    // ------------------------------------------------------------ manual MoMo
+    //
+    // The route for students who send Mobile Money to the platform wallet by hand
+    // instead of going through Paystack. Nothing here moves a booking on its own:
+    // a submission only parks evidence for staff, and approval lives in
+    // AdminController. See PaymentService.ApproveManualAsync.
+
+    /// <summary>Where to send a manual transfer for this booking, and how much.</summary>
+    [HttpGet("manual/instructions")]
+    public async Task<ActionResult<ManualPaymentInstructionsResponse>> ManualInstructions(
+        [FromQuery] Guid bookingId, CancellationToken ct)
+    {
+        var me = await _current.GetAsync(ct: ct);
+        if (me is null) return Unauthorized("Register first.");
+
+        var booking = await _db.Bookings.FirstOrDefaultAsync(b => b.Id == bookingId, ct);
+        if (booking is null) return NotFound("Booking not found.");
+        if (booking.StudentUserId != me.Id) return Forbid();
+
+        if (!_manual.IsConfigured)
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                "Manual payment isn't available right now — please pay in the app instead.");
+
+        return new ManualPaymentInstructionsResponse
+        {
+            Enabled = true,
+            WalletNumber = _manual.WalletNumber,
+            WalletName = _manual.WalletName,
+            WalletType = _manual.WalletType,
+            Instructions = _manual.Instructions,
+            Amount = booking.Amount
+        };
+    }
+
+    /// <summary>
+    /// Records a transfer the student already made, with a screenshot as evidence.
+    /// Leaves the payment in <see cref="PaymentStatus.PendingReview"/> — the booking
+    /// does not advance until staff accept it.
+    /// </summary>
+    [HttpPost("manual/submit")]
+    [RequestSizeLimit(6 * 1024 * 1024)]
+    public async Task<ActionResult<PaymentResponse>> SubmitManual(
+        [FromForm] SubmitManualPaymentRequest req, CancellationToken ct)
+    {
+        var me = await _current.GetAsync(ct: ct);
+        if (me is null) return Unauthorized("Register first.");
+
+        if (!_manual.IsConfigured)
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                "Manual payment isn't available right now — please pay in the app instead.");
+
+        var booking = await _db.Bookings
+            .Include(b => b.Payment)
+            .FirstOrDefaultAsync(b => b.Id == req.BookingId, ct);
+
+        if (booking is null) return NotFound("Booking not found.");
+        if (booking.StudentUserId != me.Id) return Forbid();
+        if (booking.Status != BookingStatus.Pending)
+            return Conflict($"Cannot pay a booking in state {booking.Status}.");
+
+        if (booking.Payment is { Status: PaymentStatus.Success })
+            return Conflict("This booking has already been paid.");
+        if (booking.Payment is { Status: PaymentStatus.PendingReview })
+            return Conflict("Your proof is already with us — we'll confirm it shortly.");
+
+        var transactionId = req.TransactionId?.Trim();
+
+        // A receipt can only buy one bed. Reusing the ID of an approved transfer is
+        // the obvious way to try this, so it is refused outright rather than queued.
+        if (!string.IsNullOrWhiteSpace(transactionId))
+        {
+            var alreadyUsed = await _db.Payments.AnyAsync(
+                p => p.ProviderTransactionId == transactionId
+                     && p.Status == PaymentStatus.Success
+                     && p.BookingId != booking.Id,
+                ct);
+
+            if (alreadyUsed)
+            {
+                _log.LogWarning(
+                    "Rejected manual submission on booking {Booking}: transaction {Txn} is already settled elsewhere.",
+                    booking.Id, transactionId);
+                return Conflict(
+                    "That transaction has already been used for another booking. " +
+                    "Check the transaction ID on your receipt.");
+            }
+        }
+
+        string proofKey;
+        try
+        {
+            proofKey = await _proofs.SaveAsync(req.Proof, ct);
+        }
+        catch (InvalidImageException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+
+        // Replace any earlier attempt (a rejected one, or an abandoned Paystack
+        // reference) so the one-payment-per-booking relationship holds.
+        if (booking.Payment is not null)
+        {
+            _proofs.Delete(booking.Payment.ProofKey);
+            _db.Payments.Remove(booking.Payment);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        var payment = new Payment
+        {
+            Reference = NewManualReference(),
+            BookingId = booking.Id,
+            Amount = booking.Amount,
+            Channel = PaymentChannel.ManualMomo,
+            Status = PaymentStatus.PendingReview,
+            ProofKey = proofKey,
+            ProviderTransactionId = transactionId,
+            SenderPhone = req.SenderPhone?.Trim() ?? me.Phone,
+            SenderName = req.SenderName?.Trim() ?? me.FullName,
+            SubmittedAt = DateTime.UtcNow
+        };
+
+        _db.Payments.Add(payment);
+
+        // Not booking.PaystackReference: nothing was charged yet, and a refund keys
+        // off that field. Approval sets it.
+        await _db.SaveChangesAsync(ct);
+
+        _log.LogInformation(
+            "Manual payment {Reference} submitted for booking {Booking} (GH₵{Amount}), awaiting review.",
+            payment.Reference, booking.Id, payment.Amount);
+
+        await _notify.ManualPaymentSubmittedAsync(booking, ct);
+
+        return ToResponse(payment, booking, _paystack.IsSimulated);
+    }
+
+    /// <summary>
+    /// Streams the uploaded proof to the student who sent it or to platform staff.
+    /// These are not static files — a MoMo receipt carries the student's name,
+    /// number and balance.
+    /// </summary>
+    [HttpGet("{reference}/proof")]
+    public async Task<IActionResult> Proof(string reference, CancellationToken ct)
+    {
+        var me = await _current.GetAsync(ct: ct);
+        if (me is null) return Unauthorized("Register first.");
+
+        var payment = await _db.Payments
+            .Include(p => p.Booking)
+            .FirstOrDefaultAsync(p => p.Reference == reference, ct);
+        if (payment is null) return NotFound();
+
+        var isStaff = me.Role is UserRole.Admin or UserRole.Manager;
+        if (payment.Booking.StudentUserId != me.Id && !isStaff) return Forbid();
+
+        var file = _proofs.Open(payment.ProofKey);
+        if (file is null) return NotFound("No proof was uploaded for this payment.");
+
+        // Private by nature: keep it out of shared caches even over HTTPS.
+        Response.Headers.CacheControl = "private, no-store";
+        return File(file.Content, file.ContentType);
+    }
+
+    private static string NewManualReference() =>
+        "medan_m_" + Guid.NewGuid().ToString("N")[..14].ToLowerInvariant();
+
     /// <summary>
     /// Paystack server-to-server callback. Signed with HMAC-SHA512 over the raw body using the
     /// secret key — we verify that before trusting anything. Always answer 200 for events we
@@ -386,6 +564,15 @@ public class PaymentsController : ControllerBase
         CreatedAt = p.CreatedAt,
         Simulated = simulated,
         RequiresOtp = requiresOtp,
-        DisplayText = displayText
+        DisplayText = displayText,
+
+        // Null for Paystack payments, so the app can tell the two routes apart.
+        ProofUrl = p.ProofKey is null ? null : $"/api/payments/{p.Reference}/proof",
+        SenderPhone = p.SenderPhone,
+        SenderName = p.SenderName,
+        ProviderTransactionId = p.ProviderTransactionId,
+        SubmittedAt = p.SubmittedAt,
+        ReviewedAt = p.ReviewedAt,
+        ReviewNote = p.ReviewNote
     };
 }

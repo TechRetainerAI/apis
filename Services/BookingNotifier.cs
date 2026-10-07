@@ -29,6 +29,22 @@ public class BookingNotifier
             "Show your check-in code when you arrive.",
             Data(booking, "payment")), ct);
 
+    /// <summary>Manual transfer submitted — tell the student it is with staff.</summary>
+    public Task ManualPaymentSubmittedAsync(Booking booking, CancellationToken ct = default) =>
+        SendAsync(booking.StudentUserId, new PushMessage(
+            "Proof received",
+            "We're checking your transfer. Your bed is held while we do — " +
+            "you'll hear back shortly.",
+            Data(booking, "payment")), ct);
+
+    /// <summary>Staff did not accept the proof; the student can send it again.</summary>
+    public Task ManualPaymentRejectedAsync(
+        Booking booking, string reason, CancellationToken ct = default) =>
+        SendAsync(booking.StudentUserId, new PushMessage(
+            "We couldn't confirm your payment",
+            $"{reason} Your bed is still held — open the booking to try again.",
+            Data(booking, "payment")), ct);
+
     /// <summary>Owner accepted the check-in code; the dispute window opens.</summary>
     public Task CheckedInAsync(Booking booking, CancellationToken ct = default) =>
         SendAsync(booking.StudentUserId, new PushMessage(

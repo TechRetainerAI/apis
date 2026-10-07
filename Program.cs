@@ -86,10 +86,16 @@ builder.Services.AddScoped<CurrentUser>();
 // ---------- Image storage (local disk → swap for blob/S3 in prod) ----------
 builder.Services.AddSingleton<IImageStorage, LocalImageStorage>();
 
+// Payment screenshots are kept apart from the public uploads: they go outside
+// wwwroot and are served only by /api/payments/{reference}/proof.
+builder.Services.AddSingleton<IProofStorage, LocalProofStorage>();
+
 // ---------- Payments (Paystack) + referrals ----------
 builder.Services.Configure<PaystackOptions>(
     builder.Configuration.GetSection(PaystackOptions.SectionName));
 builder.Services.AddHttpClient<IPaystackClient, PaystackClient>();
+builder.Services.Configure<ManualPaymentOptions>(
+    builder.Configuration.GetSection("ManualPayment"));
 builder.Services.AddScoped<PaymentService>();
 builder.Services.AddScoped<PayoutService>();
 builder.Services.AddScoped<ReferralService>();

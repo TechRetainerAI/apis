@@ -24,12 +24,18 @@ public class AdminController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly CurrentUser _current;
+    private readonly PaymentService _payments;
     private readonly ILogger<AdminController> _log;
 
-    public AdminController(AppDbContext db, CurrentUser current, ILogger<AdminController> log)
+    public AdminController(
+        AppDbContext db,
+        CurrentUser current,
+        PaymentService payments,
+        ILogger<AdminController> log)
     {
         _db = db;
         _current = current;
+        _payments = payments;
         _log = log;
     }
 
@@ -375,4 +381,133 @@ public class AdminController : ControllerBase
     /// <summary>Parses the camelCase enum names the API emits (e.g. "paymentHeld").</summary>
     private static bool TryParseCamel<TEnum>(string value, out TEnum parsed) where TEnum : struct, Enum =>
         Enum.TryParse(value, ignoreCase: true, out parsed) && Enum.IsDefined(parsed);
+
+    // ------------------------------------------------ manual payment review
+    //
+    // Students who send Mobile Money to the platform wallet by hand upload a
+    // screenshot; nothing confirms it but a person. These three routes are that
+    // person's queue. The escrow transition itself stays in PaymentService so the
+    // manual and Paystack routes cannot drift.
+
+    /// <summary>
+    /// Manual transfers awaiting a decision, oldest first. Pass <c>status</c> to see
+    /// settled ones instead ("success", "rejected").
+    /// </summary>
+    [HttpGet("payments/manual")]
+    public async Task<ActionResult<IEnumerable<ManualPaymentReviewResponse>>> ManualPayments(
+        [FromQuery] string? status, CancellationToken ct)
+    {
+        var (_, error) = await RequireStaffAsync(ct);
+        if (error is not null) return error;
+
+        var wanted = PaymentStatus.PendingReview;
+        if (!string.IsNullOrWhiteSpace(status) && !TryParseCamel(status, out wanted))
+            return BadRequest($"Unknown payment status '{status}'.");
+
+        var payments = await _db.Payments
+            .Where(p => p.Channel == PaymentChannel.ManualMomo && p.Status == wanted)
+            .Include(p => p.Booking).ThenInclude(b => b.Student)
+            .Include(p => p.Booking).ThenInclude(b => b.Hostel)
+            .OrderBy(p => p.SubmittedAt)
+            .ToListAsync(ct);
+
+        // One lookup for the whole page rather than per row: a reused receipt is the
+        // main thing a reviewer is looking for, so it ships with the list.
+        var ids = payments
+            .Select(p => p.ProviderTransactionId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToList();
+
+        var collisions = ids.Count == 0
+            ? new List<Payment>()
+            : await _db.Payments
+                .Where(p => ids.Contains(p.ProviderTransactionId!))
+                .Select(p => new Payment
+                {
+                    Reference = p.Reference,
+                    ProviderTransactionId = p.ProviderTransactionId,
+                    Status = p.Status
+                })
+                .ToListAsync(ct);
+
+        return payments.Select(p => ToReview(p, collisions)).ToList();
+    }
+
+    /// <summary>Accepts the transfer and moves the booking into escrow.</summary>
+    [HttpPost("payments/manual/{reference}/approve")]
+    public async Task<ActionResult<ManualPaymentReviewResponse>> ApproveManual(
+        string reference, CancellationToken ct)
+    {
+        var (me, error) = await RequireStaffAsync(ct);
+        if (error is not null) return error;
+
+        var payment = await LoadManualAsync(reference, ct);
+        if (payment is null) return NotFound("Unknown manual payment.");
+
+        var (ok, failure) = await _payments.ApproveManualAsync(
+            payment, payment.Booking, me!.Id, ct);
+        if (!ok) return Conflict(failure);
+
+        _log.LogInformation(
+            "Staff {Staff} approved manual payment {Reference} for booking {Booking}.",
+            me.Id, reference, payment.BookingId);
+
+        return ToReview(payment, []);
+    }
+
+    /// <summary>
+    /// Turns the transfer down with a reason the student sees. Their bed stays held so
+    /// they can correct it and submit again.
+    /// </summary>
+    [HttpPost("payments/manual/{reference}/reject")]
+    public async Task<ActionResult<ManualPaymentReviewResponse>> RejectManual(
+        string reference, RejectManualPaymentRequest req, CancellationToken ct)
+    {
+        var (me, error) = await RequireStaffAsync(ct);
+        if (error is not null) return error;
+
+        if (string.IsNullOrWhiteSpace(req.Reason))
+            return BadRequest("Give a reason — the student is shown it.");
+
+        var payment = await LoadManualAsync(reference, ct);
+        if (payment is null) return NotFound("Unknown manual payment.");
+
+        var (ok, failure) = await _payments.RejectManualAsync(
+            payment, payment.Booking, me!.Id, req.Reason.Trim(), ct);
+        if (!ok) return Conflict(failure);
+
+        return ToReview(payment, []);
+    }
+
+    private Task<Payment?> LoadManualAsync(string reference, CancellationToken ct) =>
+        _db.Payments
+            .Where(p => p.Reference == reference && p.Channel == PaymentChannel.ManualMomo)
+            .Include(p => p.Booking).ThenInclude(b => b.Student)
+            .Include(p => p.Booking).ThenInclude(b => b.Hostel)
+            .FirstOrDefaultAsync(ct);
+
+    private static ManualPaymentReviewResponse ToReview(
+        Payment p, IReadOnlyCollection<Payment> collisions) => new()
+    {
+        Reference = p.Reference,
+        BookingId = p.BookingId,
+        Amount = p.Amount,
+        Status = p.Status.ToCamel(),
+        StudentUserId = p.Booking.StudentUserId,
+        StudentName = p.Booking.Student?.FullName ?? string.Empty,
+        StudentEmail = p.Booking.Student?.Email ?? string.Empty,
+        HostelName = p.Booking.Hostel?.Name ?? string.Empty,
+        SenderPhone = p.SenderPhone,
+        SenderName = p.SenderName,
+        ProviderTransactionId = p.ProviderTransactionId,
+        ProofUrl = p.ProofKey is null ? null : $"/api/payments/{p.Reference}/proof",
+        SubmittedAt = p.SubmittedAt,
+        ReviewedAt = p.ReviewedAt,
+        ReviewNote = p.ReviewNote,
+        DuplicateOf = collisions
+            .Where(c => c.ProviderTransactionId == p.ProviderTransactionId
+                        && c.Reference != p.Reference)
+            .Select(c => c.Reference)
+            .ToList()
+    };
 }

@@ -47,6 +47,105 @@ public record PaymentResponse
 
     /// <summary>Paystack's own instruction to show the customer, when it sends one.</summary>
     public string? DisplayText { get; init; }
+
+    // ------------------------------------------------- manual MoMo (optional)
+
+    /// <summary>
+    /// Where to fetch the uploaded proof, e.g. "/api/payments/MD-M-ab12/proof".
+    /// Null unless this is a manual payment. Requires the caller's bearer token —
+    /// it is not a public image URL.
+    /// </summary>
+    public string? ProofUrl { get; init; }
+
+    public string? SenderPhone { get; init; }
+    public string? SenderName { get; init; }
+    public string? ProviderTransactionId { get; init; }
+    public DateTime? SubmittedAt { get; init; }
+    public DateTime? ReviewedAt { get; init; }
+
+    /// <summary>Why staff rejected the proof, when they did.</summary>
+    public string? ReviewNote { get; init; }
+}
+
+/// <summary>Where to send a manual transfer, for the "pay by MoMo" screen.</summary>
+public record ManualPaymentInstructionsResponse
+{
+    public bool Enabled { get; init; }
+
+    /// <summary>e.g. "0559960788".</summary>
+    public string WalletNumber { get; init; } = default!;
+
+    /// <summary>e.g. "CY TECHNOLOGIES AND CONSULTING".</summary>
+    public string WalletName { get; init; } = default!;
+
+    /// <summary>e.g. "MoMo wallet".</summary>
+    public string WalletType { get; init; } = default!;
+
+    public string? Instructions { get; init; }
+
+    /// <summary>What this particular booking costs, GH₵.</summary>
+    public int Amount { get; init; }
+}
+
+/// <summary>
+/// A completed manual transfer plus its evidence. Sent as multipart/form-data
+/// because of <see cref="Proof"/>.
+/// </summary>
+public record SubmitManualPaymentRequest
+{
+    [Required] public Guid BookingId { get; init; }
+
+    /// <summary>Screenshot of the transfer. JPG, PNG or WEBP, up to 5 MB.</summary>
+    [Required] public IFormFile Proof { get; init; } = default!;
+
+    /// <summary>Transaction ID on the student's receipt.</summary>
+    [MaxLength(100)] public string? TransactionId { get; init; }
+
+    /// <summary>The number the money was sent from. Falls back to the user's saved phone.</summary>
+    [MaxLength(30)] public string? SenderPhone { get; init; }
+
+    /// <summary>Wallet name on the receipt. Falls back to the user's name.</summary>
+    [MaxLength(150)] public string? SenderName { get; init; }
+}
+
+/// <summary>A submission in the staff review queue, with enough context to decide.</summary>
+public record ManualPaymentReviewResponse
+{
+    public string Reference { get; init; } = default!;
+    public Guid BookingId { get; init; }
+    public int Amount { get; init; }
+    public string Status { get; init; } = default!;
+
+    public Guid StudentUserId { get; init; }
+    public string StudentName { get; init; } = default!;
+    public string StudentEmail { get; init; } = default!;
+
+    public string HostelName { get; init; } = default!;
+
+    public string? SenderPhone { get; init; }
+    public string? SenderName { get; init; }
+    public string? ProviderTransactionId { get; init; }
+
+    /// <summary>Authorized endpoint for the screenshot.</summary>
+    public string? ProofUrl { get; init; }
+
+    public DateTime? SubmittedAt { get; init; }
+    public DateTime? ReviewedAt { get; init; }
+    public string? ReviewNote { get; init; }
+
+    /// <summary>
+    /// Other submissions quoting this same transaction ID. Non-empty means someone
+    /// is reusing a receipt — the thing manual review exists to catch.
+    /// </summary>
+    public IEnumerable<string> DuplicateOf { get; init; } = Array.Empty<string>();
+}
+
+/// <summary>Why staff turned a manual payment down. The student is shown this.</summary>
+public record RejectManualPaymentRequest
+{
+    [Required]
+    [MaxLength(500)]
+    public string Reason { get; init; } = default!;
 }
 
 /// <summary>The code the customer received for a Mobile Money charge.</summary>

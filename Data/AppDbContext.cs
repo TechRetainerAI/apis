@@ -194,6 +194,12 @@ public class AppDbContext : DbContext
                 .WithOne(bk => bk.Payment)
                 .HasForeignKey<Payment>(p => p.BookingId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // Manual review looks a receipt up by transaction ID on every submission
+            // and on every page of the queue. Not unique: a rejected attempt and its
+            // corrected resubmission legitimately share one, and spotting reuse is
+            // the reviewer's job, not a constraint's.
+            e.HasIndex(p => p.ProviderTransactionId);
         });
 
         // ---------- Payout ----------
