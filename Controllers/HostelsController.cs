@@ -17,12 +17,21 @@ public class HostelsController : ControllerBase
     private readonly AppDbContext _db;
     private readonly CurrentUser _current;
     private readonly IImageStorage _images;
+    private readonly IProofStorage _proofs;
+    private readonly ILogger<HostelsController> _log;
 
-    public HostelsController(AppDbContext db, CurrentUser current, IImageStorage images)
+    public HostelsController(
+        AppDbContext db,
+        CurrentUser current,
+        IImageStorage images,
+        IProofStorage proofs,
+        ILogger<HostelsController> log)
     {
         _db = db;
         _current = current;
         _images = images;
+        _proofs = proofs;
+        _log = log;
     }
 
     /// <summary>Public listing with simple filters: campus, type, price range, verified, search.</summary>
@@ -293,10 +302,20 @@ public class HostelsController : ControllerBase
     }
 
     /// <summary>
-    /// Delete a listing (owner/worker, or platform staff). Rooms, beds, photos and
-    /// amenities go with it. Refused while any booking references the hostel — those
-    /// are financial records, and the FK is Restrict, so this reports the conflict
-    /// instead of surfacing a database error.
+    /// Delete a listing (owner/worker, or platform staff), and everything hanging off
+    /// it — rooms, beds, photos, amenities, reviews, favourites, and every booking with
+    /// its payment and payout rows.
+    ///
+    /// This destroys financial records, including for bookings a student has paid and
+    /// not yet checked into. It is deliberate and irreversible: there is no archive to
+    /// restore from and no row left saying the booking existed. The only trace is the
+    /// warning this logs on the way out, which is why it records the counts and the
+    /// total paid before anything is removed.
+    ///
+    /// Most of the graph cascades from the hostel. Bookings do not — their FKs are
+    /// Restrict, and payouts are Restrict against bookings — so those are removed by
+    /// hand, innermost first, inside a transaction so a failure cannot leave a listing
+    /// half-deleted.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [Authorize]
@@ -309,16 +328,55 @@ public class HostelsController : ControllerBase
         if (hostel is null) return NotFound("Hostel not found.");
         if (!await CanManage(hostel, ct)) return Forbid();
 
-        var bookings = await _db.Bookings.CountAsync(b => b.HostelId == id, ct);
-        if (bookings > 0)
-            return Conflict(
-                $"This hostel has {bookings} booking(s) and cannot be deleted. " +
-                "Unverify it instead so it stops appearing to students.");
+        var me = await _current.GetAsync(ct: ct);
+
+        var bookings = await _db.Bookings
+            .Where(b => b.HostelId == id)
+            .ToListAsync(ct);
+        var bookingIds = bookings.Select(b => b.Id).ToList();
+
+        var payments = bookingIds.Count == 0
+            ? []
+            : await _db.Payments.Where(p => bookingIds.Contains(p.BookingId)).ToListAsync(ct);
+
+        var payouts = bookingIds.Count == 0
+            ? []
+            : await _db.Payouts.Where(p => bookingIds.Contains(p.BookingId)).ToListAsync(ct);
+
+        // Said before the rows are gone, because afterwards nothing can reconstruct it.
+        if (bookings.Count > 0)
+            _log.LogWarning(
+                "Hostel {Hostel} ({Name}) is being deleted by {User} with {Bookings} booking(s), " +
+                "{Payments} payment(s) totalling GH₵{Paid}, and {Payouts} payout(s). " +
+                "These are destroyed permanently. Booking ids: {Ids}",
+                id, hostel.Name, me?.Id, bookings.Count, payments.Count,
+                payments.Where(p => p.Status == PaymentStatus.Success).Sum(p => p.Amount),
+                payouts.Count, string.Join(", ", bookingIds));
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        // Payouts first: Restrict against Booking, so they block everything behind them.
+        if (payouts.Count > 0) _db.Payouts.RemoveRange(payouts);
+
+        // Payments cascade from Booking, but the uploaded proofs live on disk and
+        // nothing else would ever come back for them.
+        foreach (var payment in payments) _proofs.Delete(payment.ProofKey);
+
+        // Beds point at their current booking with SetNull, so bookings can go next.
+        if (bookings.Count > 0) _db.Bookings.RemoveRange(bookings);
+        await _db.SaveChangesAsync(ct);
 
         foreach (var photo in hostel.Photos) _images.Delete(photo.Url);
 
+        // Rooms, beds, photos, amenities, reviews and favourites all cascade from here.
         _db.Hostels.Remove(hostel);
         await _db.SaveChangesAsync(ct);
+
+        await tx.CommitAsync(ct);
+
+        _log.LogWarning(
+            "Hostel {Hostel} deleted by {User}.", id, me?.Id);
+
         return NoContent();
     }
 
