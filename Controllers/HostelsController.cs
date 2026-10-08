@@ -151,6 +151,8 @@ public class HostelsController : ControllerBase
             DistanceKm = h.DistanceKm,
             MinPrice = h.MinPrice,
             MaxPrice = h.MaxPrice,
+            OwnerMinPrice = Pricing.OwnerPrice(h.MinPrice),
+            OwnerMaxPrice = Pricing.OwnerPrice(h.MaxPrice),
             Photos = h.Photos.OrderBy(p => p.SortOrder).Select(p => p.Url).ToList(),
             Amenities = h.Amenities.Select(a => a.Amenity.IconKey ?? a.Amenity.Name).ToList(),
             IsVerified = h.IsVerified,
@@ -278,10 +280,12 @@ public class HostelsController : ControllerBase
         hostel.Latitude = req.Lat;
         hostel.Longitude = req.Lng;
         hostel.DistanceKm = req.DistanceKm;
-        // No Pricing.WithMarkup here, unlike Create: the edit form round-trips the
-        // LISTED prices (markup already in), so applying it again would compound.
-        hostel.MinPrice = req.MinPrice;
-        hostel.MaxPrice = req.MaxPrice;
+        // Owner's asking range, exactly as Create takes it — the edit form binds to
+        // OwnerMinPrice/OwnerMaxPrice, so what it loads is what it sends and the
+        // markup cannot compound. (For a hostel with rooms this is overwritten by
+        // RefreshHostelPriceRange anyway; the rooms are the real source.)
+        hostel.MinPrice = Pricing.WithMarkup(req.MinPrice);
+        hostel.MaxPrice = Pricing.WithMarkup(req.MaxPrice);
         hostel.ContactPhone = req.ContactPhone;
         hostel.UpdatedAt = DateTime.UtcNow;
 
@@ -493,6 +497,8 @@ public class HostelsController : ControllerBase
         DistanceKm = h.DistanceKm,
         MinPrice = h.MinPrice,
         MaxPrice = h.MaxPrice,
+        OwnerMinPrice = Pricing.OwnerPrice(h.MinPrice),
+        OwnerMaxPrice = Pricing.OwnerPrice(h.MaxPrice),
         Photos = h.Photos.OrderBy(p => p.SortOrder).Select(p => p.Url).ToList(),
         Amenities = h.Amenities.Select(a => a.Amenity.IconKey ?? a.Amenity.Name).ToList(),
         IsVerified = h.IsVerified,

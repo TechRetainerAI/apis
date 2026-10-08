@@ -78,9 +78,10 @@ public class RoomsController : ControllerBase
     /// Edit a room after it is listed — the manage screen's save. Owner/worker, or
     /// platform staff.
     ///
-    /// The price is stored exactly as sent: it is the LISTED price the edit form
-    /// loaded, with MeDan's 5% already inside it, so re-applying the markup here
-    /// would compound it on every save. Create is where the markup goes on, once.
+    /// The price means what it means on create: the owner's asking price, with
+    /// MeDan's 5% added on top before storing. That is safe because the edit form
+    /// loads <c>ownerPrice</c>, not the listed figure — the number round-trips
+    /// unchanged, so re-saving a room never walks its price upward.
     /// </summary>
     [HttpPut("{roomId:guid}")]
     [Authorize]
@@ -153,7 +154,8 @@ public class RoomsController : ControllerBase
         room.RoomType = req.Type;
         room.Capacity = req.Capacity;
         room.Gender = req.Gender;
-        room.PricePerBedPerSemester = req.PricePerSemester;
+        // Same rule as create: the owner types what they want to receive.
+        room.PricePerBedPerSemester = Pricing.WithMarkup(req.PricePerSemester);
         if (req.Floor is not null) room.Floor = req.Floor;
 
         // Kept in step with the bed rows, which are the real source of availability.
@@ -253,6 +255,7 @@ public class RoomsController : ControllerBase
         Label = r.Label,
         Type = r.RoomType.ToCamel(),
         PricePerSemester = r.PricePerBedPerSemester,
+        OwnerPrice = Pricing.OwnerPrice(r.PricePerBedPerSemester),
         Status = r.Status.ToCamel(),
         Capacity = r.Capacity,
         AvailableBeds = r.AvailableBeds,

@@ -22,11 +22,10 @@ public record CreateRoomRequest
 /// <summary>
 /// Body for PUT /api/hostels/{hostelId}/rooms/{roomId}.
 ///
-/// Unlike create, <see cref="PricePerSemester"/> is the LISTED price — the number
-/// students see, markup already in — and it is stored as given. The edit form loads
-/// what <see cref="RoomSummary"/> returns, which is the listed price, so adding
-/// MeDan's 5% here would compound it on every save (2,100 → 2,205 → 2,315…).
-/// Same rule as editing a hostel's price range.
+/// Same meaning as create: <see cref="PricePerSemester"/> is the owner's ASKING
+/// price and the server puts MeDan's 5% on top. The edit form loads
+/// <see cref="RoomSummary.OwnerPrice"/> — not the listed price — so the number
+/// goes out and comes back unchanged and the markup cannot compound.
 ///
 /// Floor is only changed when provided, because clients don't round-trip it
 /// (RoomSummary doesn't carry it).
@@ -39,7 +38,7 @@ public record UpdateRoomRequest
     /// <summary>Beds in the room: 1–4. Beds are added or (if free) removed to match.</summary>
     [Range(1, 4)] public int Capacity { get; init; } = 1;
 
-    /// <summary>Listed price per bed/space per semester, GH₵ — what the student pays.</summary>
+    /// <summary>Owner's asking price per bed/space per semester, GH₵ — what they receive.</summary>
     [Range(0, int.MaxValue)] public int PricePerSemester { get; init; }
     public Gender Gender { get; init; } = Gender.Mixed;
     [MaxLength(30)] public string? Floor { get; init; }
@@ -59,7 +58,16 @@ public record RoomSummary
     public Guid HostelId { get; init; }
     public string Label { get; init; } = default!;
     public string Type { get; init; } = default!;          // camelCase enum, e.g. "doublyShared"
+
+    /// <summary>What the STUDENT pays, MeDan's 5% included. Use this on the student app.</summary>
     public int PricePerSemester { get; init; }
+
+    /// <summary>
+    /// What the OWNER receives — the asking price they typed. Use this everywhere on
+    /// the owner/admin side, and send it back as <c>pricePerSemester</c> when editing,
+    /// which is the same number create takes.
+    /// </summary>
+    public int OwnerPrice { get; init; }
     public string Status { get; init; } = default!;        // available | occupied | maintenance
     public int Capacity { get; init; }
 

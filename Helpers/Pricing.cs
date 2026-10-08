@@ -23,4 +23,13 @@ public static class Pricing
     /// </summary>
     public static int PlatformShare(int listedAmount) =>
         listedAmount - (int)Math.Round(listedAmount / (1 + MarkupRate), MidpointRounding.AwayFromZero);
+
+    /// <summary>
+    /// What the owner actually receives from a listed amount — the number to show on
+    /// the owner and admin side, where the marked-up figure only ever looks wrong.
+    /// The exact inverse of <see cref="WithMarkup"/>, so a price loaded here and saved
+    /// back lands on the same listed amount instead of drifting.
+    /// </summary>
+    public static int OwnerPrice(int listedAmount) =>
+        listedAmount - PlatformShare(listedAmount);
 }

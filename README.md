@@ -259,6 +259,35 @@ dotnet ef migrations add <Name> -o Data/Migrations
 dotnet ef database update
 ```
 
+## Pricing — one rule, two views
+
+MeDan's 5% goes **on top** of the owner's asking price. The owner always receives exactly
+what they typed; the student pays that plus 5%.
+
+```
+owner types          5,500      ← every WRITE takes this number
+student pays         5,775      ← WithMarkup(5500), stored on the room
+MeDan keeps            275      ← PlatformShare(5775)
+owner receives       5,500      ← OwnerPrice(5775)
+```
+
+**Every write takes the owner's asking price** — `POST`/`PUT` on rooms, and on hostels.
+**Every response carries both figures**, so each dashboard shows the right one:
+
+| Field | Who it's for |
+|---|---|
+| `pricePerSemester`, `minPrice`, `maxPrice` | Students — markup included |
+| `ownerPrice`, `ownerMinPrice`, `ownerMaxPrice` | Owner + admin — what they receive |
+
+⚠️ **Owner/admin forms must bind to the `owner*` fields.** Binding an edit form to
+`pricePerSemester` sends the listed price back into a field that adds 5% again, and the
+price walks upward on every save (5,775 → 6,064 → 6,367…). Loading `ownerPrice` makes the
+number round-trip unchanged — verified stable across repeated saves, including on prices
+listed before this split.
+
+A hostel's range is derived from its rooms (`RefreshHostelPriceRange`), so rooms are the
+real source; the hostel's own price fields only matter for a listing with no rooms yet.
+
 ## Payment + referral flows
 
 **Paying for a booking** (`PaymentsController` → `PaymentService`):

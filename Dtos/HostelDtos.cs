@@ -61,8 +61,19 @@ public record HostelSummary
     public double Lat { get; init; }
     public double Lng { get; init; }
     public double DistanceKm { get; init; }
+
+    /// <summary>Student-facing range, MeDan's 5% included.</summary>
     public int MinPrice { get; init; }
     public int MaxPrice { get; init; }
+
+    /// <summary>
+    /// The same range as the OWNER receives it, the 5% taken back out. Show these two
+    /// on the owner/admin side — the student-facing figures only ever read as wrong
+    /// to the person who typed the asking price.
+    /// </summary>
+    public int OwnerMinPrice { get; init; }
+    public int OwnerMaxPrice { get; init; }
+
     public List<string> Photos { get; init; } = new();
     public List<string> Amenities { get; init; } = new();  // icon keys, e.g. ["wifi","ac"]
     public bool IsVerified { get; init; }
