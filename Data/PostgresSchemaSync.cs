@@ -34,6 +34,12 @@ public static class PostgresSchemaSync
             return;
         }
 
+        // Whole tables first — a release that adds an entity leaves EnsureCreated()
+        // just as silent as a new column does, and every query against the new type
+        // fails with "relation does not exist" until the table is there.
+        if (await CreateMissingTablesAsync(db, logger, existing, ct))
+            existing = await ReadExistingColumnsAsync(db, ct);
+
         var added = 0;
         var skipped = new List<string>();
 
@@ -126,6 +132,82 @@ public static class PostgresSchemaSync
                 "Schema sync could not add required (NOT NULL) column(s): {Columns}. " +
                 "These need a migration or a manual ALTER with a default.",
                 string.Join(", ", skipped));
+    }
+
+    /// <summary>
+    /// Creates tables the model declares but the database lacks, taking the DDL from EF's
+    /// own create script so the column types, keys and constraints match exactly what
+    /// EnsureCreated() would have built. Only the CREATE TABLE blocks are executed:
+    /// indexes are left to the index pass, and the script's seed-data INSERTs are skipped
+    /// (their text could contain the semicolons this splits on).
+    /// </summary>
+    /// <returns>True when at least one table was created.</returns>
+    private static async Task<bool> CreateMissingTablesAsync(
+        AppDbContext db,
+        ILogger logger,
+        HashSet<(string Table, string Column)> existing,
+        CancellationToken ct)
+    {
+        var present = existing.Select(e => e.Table).ToHashSet(StringComparer.Ordinal);
+
+        var missing = db.Model.GetEntityTypes()
+            .Select(e => e.GetTableName())
+            .Where(t => !string.IsNullOrEmpty(t) && !present.Contains(t!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (missing.Count == 0) return false;
+
+        var script = db.Database.GenerateCreateScript();
+        var created = 0;
+
+        foreach (var table in missing)
+        {
+            var ddl = ExtractCreateTable(script, table!);
+            if (ddl is null)
+            {
+                logger.LogError(
+                    "Schema sync: table {Table} is missing but no CREATE statement was found for it.",
+                    table);
+                continue;
+            }
+
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(ddl, ct);
+                logger.LogWarning("Schema sync: created missing table {Table}.", table);
+                created++;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Schema sync: could not create table {Table}.", table);
+            }
+        }
+
+        return created > 0;
+    }
+
+    /// <summary>
+    /// Pulls one <c>CREATE TABLE "name" ( … );</c> block out of an EF create script,
+    /// ending at the first line that closes the block rather than at any semicolon,
+    /// so a default value containing one cannot truncate it.
+    /// </summary>
+    private static string? ExtractCreateTable(string script, string table)
+    {
+        var marker = $"CREATE TABLE \"{table}\" (";
+        var start = script.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return null;
+
+        var lines = script[start..].Split('\n');
+        var block = new List<string>();
+
+        foreach (var line in lines)
+        {
+            block.Add(line.TrimEnd('\r'));
+            if (line.TrimEnd('\r', ' ') == ");") return string.Join('\n', block);
+        }
+
+        return null;   // unterminated — better to report nothing than half a table
     }
 
     /// <summary>Every (table, column) pair the database currently has, in the active schema.</summary>

@@ -51,6 +51,8 @@ public class HostelsController : ControllerBase
             .Include(h => h.Company)
             .Include(h => h.Photos)
             .Include(h => h.Amenities).ThenInclude(a => a.Amenity)
+            // Rooms feed PriceRange — the card must quote what booking charges.
+            .Include(h => h.Rooms)
             .AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(campus)) query = query.Where(h => h.CampusCode == campus);
@@ -61,7 +63,13 @@ public class HostelsController : ControllerBase
         if (roomType is not null)
             query = query.Where(h => h.Rooms.Any(r => r.RoomType == roomType));
 
-        if (maxPrice is not null) query = query.Where(h => h.MinPrice <= maxPrice);
+        // Filter on live room prices, same as PriceRange: the stored MinPrice
+        // can be stale, and filtering on one number while displaying another
+        // would make hostels appear or vanish for no visible reason.
+        if (maxPrice is not null)
+            query = query.Where(h => h.Rooms.Any()
+                ? h.Rooms.Min(r => r.PricePerBedPerSemester) <= maxPrice
+                : h.MinPrice <= maxPrice);
         if (verified is true) query = query.Where(h => h.IsVerified);
         // Students search for places, not just names — "Sunyani" is a city, and
         // matching only the hostel name meant that returned nothing even though
@@ -111,6 +119,7 @@ public class HostelsController : ControllerBase
             .Include(h => h.Company)
             .Include(h => h.Photos)
             .Include(h => h.Amenities).ThenInclude(a => a.Amenity)
+            .Include(h => h.Rooms)
             .Where(h => companyIds.Contains(h.CompanyId))
             .OrderBy(h => h.Name)
             .Select(h => ToSummary(h))
@@ -139,6 +148,8 @@ public class HostelsController : ControllerBase
 
         if (h is null) return null;
 
+        var (minPrice, maxPrice) = PriceRange(h);
+
         return new HostelDetail
         {
             Id = h.Id,
@@ -149,10 +160,10 @@ public class HostelsController : ControllerBase
             Lat = h.Latitude,
             Lng = h.Longitude,
             DistanceKm = h.DistanceKm,
-            MinPrice = h.MinPrice,
-            MaxPrice = h.MaxPrice,
-            OwnerMinPrice = Pricing.OwnerPrice(h.MinPrice),
-            OwnerMaxPrice = Pricing.OwnerPrice(h.MaxPrice),
+            MinPrice = minPrice,
+            MaxPrice = maxPrice,
+            OwnerMinPrice = Pricing.OwnerPrice(minPrice),
+            OwnerMaxPrice = Pricing.OwnerPrice(maxPrice),
             Photos = h.Photos.OrderBy(p => p.SortOrder).Select(p => p.Url).ToList(),
             Amenities = h.Amenities.Select(a => a.Amenity.IconKey ?? a.Amenity.Name).ToList(),
             IsVerified = h.IsVerified,
@@ -485,8 +496,28 @@ public class HostelsController : ControllerBase
         return worker is not null && worker.CanPostListings;
     }
 
-    private static HostelSummary ToSummary(Hostel h) => new()
+    /// <summary>
+    /// The price range students see. Rooms are the source of truth whenever any
+    /// exist — the stored range goes stale (typed in at listing time, or set
+    /// before the 5% markup), and a browse card that disagrees with the room
+    /// list reads as a scam the moment the student goes to book. The stored
+    /// range only stands in until the first room is listed.
+    /// </summary>
+    private static (int Min, int Max) PriceRange(Hostel h)
     {
+        if (h.Rooms is { Count: > 0 })
+        {
+            var prices = h.Rooms.Select(r => r.PricePerBedPerSemester).ToList();
+            return (prices.Min(), prices.Max());
+        }
+        return (h.MinPrice, h.MaxPrice);
+    }
+
+    private static HostelSummary ToSummary(Hostel h)
+    {
+        var (min, max) = PriceRange(h);
+        return new()
+        {
         Id = h.Id,
         Name = h.Name,
         Campus = h.CampusCode,
@@ -495,10 +526,10 @@ public class HostelsController : ControllerBase
         Lat = h.Latitude,
         Lng = h.Longitude,
         DistanceKm = h.DistanceKm,
-        MinPrice = h.MinPrice,
-        MaxPrice = h.MaxPrice,
-        OwnerMinPrice = Pricing.OwnerPrice(h.MinPrice),
-        OwnerMaxPrice = Pricing.OwnerPrice(h.MaxPrice),
+        MinPrice = min,
+        MaxPrice = max,
+        OwnerMinPrice = Pricing.OwnerPrice(min),
+        OwnerMaxPrice = Pricing.OwnerPrice(max),
         Photos = h.Photos.OrderBy(p => p.SortOrder).Select(p => p.Url).ToList(),
         Amenities = h.Amenities.Select(a => a.Amenity.IconKey ?? a.Amenity.Name).ToList(),
         IsVerified = h.IsVerified,
@@ -508,7 +539,8 @@ public class HostelsController : ControllerBase
         ContactPhone = h.ContactPhone,
         PropertyType = h.PropertyType.ToCamel(),
         CompanyId = h.CompanyId
-    };
+        };
+    }
 
     private static RoomSummary ToRoomSummary(Room r) => new()
     {

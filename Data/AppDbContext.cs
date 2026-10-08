@@ -25,6 +25,7 @@ public class AppDbContext : DbContext
     public DbSet<Favorite> Favorites => Set<Favorite>();
     public DbSet<Referral> Referrals => Set<Referral>();
     public DbSet<DeviceToken> DeviceTokens => Set<DeviceToken>();
+    public DbSet<StoredImage> StoredImages => Set<StoredImage>();
     public DbSet<CampusEvent> Events => Set<CampusEvent>();
     public DbSet<UserNotification> Notifications => Set<UserNotification>();
 
@@ -200,6 +201,18 @@ public class AppDbContext : DbContext
             // corrected resubmission legitimately share one, and spotting reuse is
             // the reviewer's job, not a constraint's.
             e.HasIndex(p => p.ProviderTransactionId);
+        });
+
+        // ---------- StoredImage ----------
+        b.Entity<StoredImage>(e =>
+        {
+            e.HasKey(i => i.Id);
+            e.Property(i => i.ContentType).IsRequired().HasMaxLength(100);
+            e.Property(i => i.Data).IsRequired();
+
+            // Serving a public image filters on both columns; proofs never come
+            // through that path.
+            e.HasIndex(i => i.IsPublic);
         });
 
         // ---------- Payout ----------

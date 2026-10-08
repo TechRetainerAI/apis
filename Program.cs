@@ -83,12 +83,28 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<CurrentUser>();
 
-// ---------- Image storage (local disk → swap for blob/S3 in prod) ----------
-builder.Services.AddSingleton<IImageStorage, LocalImageStorage>();
+// ---------- Image storage ----------
+// Default is the database, because the deployed host erases its container disk
+// on every deploy: photos written to wwwroot vanished while their URLs lived on,
+// and a payment proof dying that way is the lost evidence behind a transfer
+// staff had already approved. Postgres is the only store here that survives a
+// deploy. Set Storage:Provider to "Disk" for the local-file implementations
+// (a dev box, or a host with a real mounted disk).
+//
+// Scoped, not singleton: both take AppDbContext.
+var diskStorage = string.Equals(
+    builder.Configuration["Storage:Provider"], "Disk", StringComparison.OrdinalIgnoreCase);
 
-// Payment screenshots are kept apart from the public uploads: they go outside
-// wwwroot and are served only by /api/payments/{reference}/proof.
-builder.Services.AddSingleton<IProofStorage, LocalProofStorage>();
+if (diskStorage)
+{
+    builder.Services.AddScoped<IImageStorage, LocalImageStorage>();
+    builder.Services.AddScoped<IProofStorage, LocalProofStorage>();
+}
+else
+{
+    builder.Services.AddScoped<IImageStorage, DbImageStorage>();
+    builder.Services.AddScoped<IProofStorage, DbProofStorage>();
+}
 
 // ---------- Payments (Paystack) + referrals ----------
 builder.Services.Configure<PaystackOptions>(
