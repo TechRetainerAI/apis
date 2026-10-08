@@ -3,6 +3,7 @@ using MeDan.Api.Data;
 using MeDan.Api.Dtos;
 using MeDan.Api.Helpers;
 using MeDan.Api.Models;
+using MeDan.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -15,11 +16,19 @@ public class RoomsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly CurrentUser _current;
+    private readonly IProofStorage _proofs;
+    private readonly ILogger<RoomsController> _log;
 
-    public RoomsController(AppDbContext db, CurrentUser current)
+    public RoomsController(
+        AppDbContext db,
+        CurrentUser current,
+        IProofStorage proofs,
+        ILogger<RoomsController> log)
     {
         _db = db;
         _current = current;
+        _proofs = proofs;
+        _log = log;
     }
 
     [HttpGet]
@@ -170,10 +179,17 @@ public class RoomsController : ControllerBase
     }
 
     /// <summary>
-    /// Remove a room that was never booked. Any booking — past or active — pins
-    /// the room (FK Restrict; students' booking history must keep pointing at a
-    /// real room), so those return 409: maintenance status is how a once-booked
-    /// room leaves the market. Beds cascade with the room.
+    /// Remove a room and everything hanging off it — its beds, and every booking
+    /// against it with that booking's payment and payout rows.
+    ///
+    /// Bookings used to block this (FK Restrict, 409, "set it to maintenance
+    /// instead"). They no longer do, matching the same decision taken for deleting
+    /// a hostel: the delete wins and the records go, including for a student who
+    /// has paid and not yet checked in. Irreversible, with nothing left saying the
+    /// booking existed — hence the warning logged before the rows are touched.
+    ///
+    /// Maintenance status is still the better move when the room is only coming
+    /// off the market for a while; this is for a room that should not exist.
     /// </summary>
     [HttpDelete("{roomId:guid}")]
     [Authorize]
@@ -189,13 +205,48 @@ public class RoomsController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
         if (room is null) return NotFound("Room not found.");
 
-        if (await _db.Bookings.AnyAsync(b => b.RoomId == roomId, ct))
-            return Conflict(
-                "This room has bookings (past or active) and can't be deleted. " +
-                "Set it to maintenance to take it off the market instead.");
+        var me = await _current.GetAsync(ct: ct);
 
-        _db.Rooms.Remove(room);
+        var bookings = await _db.Bookings.Where(b => b.RoomId == roomId).ToListAsync(ct);
+        var bookingIds = bookings.Select(b => b.Id).ToList();
+
+        var payments = bookingIds.Count == 0
+            ? []
+            : await _db.Payments.Where(p => bookingIds.Contains(p.BookingId)).ToListAsync(ct);
+
+        var payouts = bookingIds.Count == 0
+            ? []
+            : await _db.Payouts.Where(p => bookingIds.Contains(p.BookingId)).ToListAsync(ct);
+
+        // Before anything is removed: afterwards nothing can reconstruct this.
+        if (bookings.Count > 0)
+            _log.LogWarning(
+                "Room {Room} ({Label}) of hostel {Hostel} is being deleted by {User} with " +
+                "{Bookings} booking(s), {Payments} payment(s) totalling GH₵{Paid}, and " +
+                "{Payouts} payout(s). These are destroyed permanently. Booking ids: {Ids}",
+                roomId, room.Label, hostelId, me?.Id, bookings.Count, payments.Count,
+                payments.Where(p => p.Status == PaymentStatus.Success).Sum(p => p.Amount),
+                payouts.Count, string.Join(", ", bookingIds));
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        // Payouts are Restrict against Booking, so they go first.
+        if (payouts.Count > 0) _db.Payouts.RemoveRange(payouts);
+
+        // Payments cascade with the booking, but their uploaded proofs are files on
+        // disk that nothing else would ever come back for.
+        foreach (var payment in payments) _proofs.Delete(payment.ProofKey);
+
+        // Beds reference their current booking with SetNull, so bookings can go next.
+        if (bookings.Count > 0) _db.Bookings.RemoveRange(bookings);
         await _db.SaveChangesAsync(ct);
+
+        _db.Rooms.Remove(room);          // beds cascade
+        await _db.SaveChangesAsync(ct);
+
+        await tx.CommitAsync(ct);
+
+        _log.LogWarning("Room {Room} deleted by {User}.", roomId, me?.Id);
 
         await RefreshHostelPriceRange(hostelId, ct);
         return NoContent();
