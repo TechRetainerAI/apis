@@ -144,13 +144,15 @@ public class BookingsController : ControllerBase
         // Serializable transaction prevents two students grabbing the same bed.
         await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
 
-        var room = await _db.Rooms.Include(r => r.Hostel)
+        // Beds come with the room so the availability recount below sees this
+        // request's own change to the bed it takes.
+        var room = await _db.Rooms.Include(r => r.Hostel).Include(r => r.Beds)
             .FirstOrDefaultAsync(r => r.Id == req.RoomId, ct);
         if (room is null) return NotFound("Room not found.");
 
         var bed = req.BedId is Guid bedId
-            ? await _db.Beds.FirstOrDefaultAsync(x => x.Id == bedId && x.RoomId == room.Id, ct)
-            : await _db.Beds.FirstOrDefaultAsync(x => x.RoomId == room.Id && x.Status == BedStatus.Available, ct);
+            ? room.Beds.FirstOrDefault(x => x.Id == bedId)
+            : room.Beds.FirstOrDefault(x => x.Status == BedStatus.Available);
 
         if (bed is null) return NotFound("No bed available in this room.");
         if (bed.Status != BedStatus.Available) return Conflict("That bed is no longer available.");
@@ -180,8 +182,7 @@ public class BookingsController : ControllerBase
 
         bed.Status = BedStatus.Reserved;
         bed.CurrentBookingId = booking.Id;
-        room.AvailableBeds = Math.Max(0, room.AvailableBeds - 1);
-        if (room.AvailableBeds == 0) room.Status = RoomStatus.Occupied;
+        SyncAvailability(room);
 
         _db.Bookings.Add(booking);
         await _db.SaveChangesAsync(ct);
@@ -258,8 +259,14 @@ public class BookingsController : ControllerBase
         booking.Status = BookingStatus.CheckedIn;
         booking.CheckedInAt = DateTime.UtcNow;
 
-        var bed = await _db.Beds.FirstAsync(b => b.Id == booking.BedId, ct);
+        // Reserved → Occupied leaves the free count alone, but every bed change goes
+        // through the same recount so no path can quietly put the room out of step.
+        var room = await _db.Rooms.Include(r => r.Beds)
+            .FirstAsync(r => r.Id == booking.RoomId, ct);
+
+        var bed = room.Beds.First(b => b.Id == booking.BedId);
         bed.Status = BedStatus.Occupied;
+        SyncAvailability(room);
 
         await _db.SaveChangesAsync(ct);
         await _notify.CheckedInAsync(booking, ct);
@@ -442,13 +449,38 @@ public class BookingsController : ControllerBase
     /// <summary>Puts the bed back on the market when a booking ends without a stay.</summary>
     private async Task ReleaseBedAsync(Booking booking, CancellationToken ct)
     {
-        var bed = await _db.Beds.FirstAsync(b => b.Id == booking.BedId, ct);
+        var room = await _db.Rooms.Include(r => r.Beds)
+            .FirstAsync(r => r.Id == booking.RoomId, ct);
+
+        var bed = room.Beds.First(b => b.Id == booking.BedId);
         bed.Status = BedStatus.Available;
         bed.CurrentBookingId = null;
 
-        var room = await _db.Rooms.FirstAsync(r => r.Id == booking.RoomId, ct);
-        room.AvailableBeds += 1;
-        if (room.Status == RoomStatus.Occupied) room.Status = RoomStatus.Available;
+        SyncAvailability(room);
+    }
+
+    /// <summary>
+    /// Recomputes what a room advertises from its bed rows, which are the only real
+    /// record of what is free.
+    ///
+    /// This used to be a counter nudged up and down beside each bed change, and the
+    /// two drifted apart: releasing a bed added one with no ceiling, so a booking
+    /// cancelled down two paths — or any release that ran twice — pushed the count
+    /// past the room's own capacity. The room then advertised beds it did not have,
+    /// and the student who tried to take one got "No bed available in this room"
+    /// while the listing still showed beds free. Counting the rows cannot drift.
+    ///
+    /// Callers must have the beds loaded and mutated already: the count runs over
+    /// tracked entities so it sees changes this request has not saved yet.
+    /// </summary>
+    private static void SyncAvailability(Room room)
+    {
+        room.AvailableBeds = room.Beds.Count(b => b.Status == BedStatus.Available);
+
+        // Maintenance is the owner saying the room is off the market whatever its
+        // beds say, so availability never overrides it.
+        if (room.Status != RoomStatus.Maintenance)
+            room.Status = room.AvailableBeds == 0 ? RoomStatus.Occupied : RoomStatus.Available;
     }
 
     // Photos are included so the response can carry the hostel's cover image —
