@@ -177,12 +177,15 @@ public class BookingsController : ControllerBase
             Amount = amount,
             Commission = commission,
             Status = BookingStatus.Pending,
-            CheckInCode = GenerateCode()
+            CheckInCode = GenerateCode(),
+            // The hold starts now. Unpaid when it runs out and the sweeper takes
+            // the bed back, so an abandoned booking stops blocking the room.
+            ExpiresAt = DateTime.UtcNow + BookingExpiryService.Hold
         };
 
         bed.Status = BedStatus.Reserved;
         bed.CurrentBookingId = booking.Id;
-        SyncAvailability(room);
+        RoomAvailability.Sync(room);
 
         _db.Bookings.Add(booking);
         await _db.SaveChangesAsync(ct);
@@ -266,7 +269,7 @@ public class BookingsController : ControllerBase
 
         var bed = room.Beds.First(b => b.Id == booking.BedId);
         bed.Status = BedStatus.Occupied;
-        SyncAvailability(room);
+        RoomAvailability.Sync(room);
 
         await _db.SaveChangesAsync(ct);
         await _notify.CheckedInAsync(booking, ct);
@@ -447,41 +450,8 @@ public class BookingsController : ControllerBase
     // ---- helpers ----
 
     /// <summary>Puts the bed back on the market when a booking ends without a stay.</summary>
-    private async Task ReleaseBedAsync(Booking booking, CancellationToken ct)
-    {
-        var room = await _db.Rooms.Include(r => r.Beds)
-            .FirstAsync(r => r.Id == booking.RoomId, ct);
-
-        var bed = room.Beds.First(b => b.Id == booking.BedId);
-        bed.Status = BedStatus.Available;
-        bed.CurrentBookingId = null;
-
-        SyncAvailability(room);
-    }
-
-    /// <summary>
-    /// Recomputes what a room advertises from its bed rows, which are the only real
-    /// record of what is free.
-    ///
-    /// This used to be a counter nudged up and down beside each bed change, and the
-    /// two drifted apart: releasing a bed added one with no ceiling, so a booking
-    /// cancelled down two paths — or any release that ran twice — pushed the count
-    /// past the room's own capacity. The room then advertised beds it did not have,
-    /// and the student who tried to take one got "No bed available in this room"
-    /// while the listing still showed beds free. Counting the rows cannot drift.
-    ///
-    /// Callers must have the beds loaded and mutated already: the count runs over
-    /// tracked entities so it sees changes this request has not saved yet.
-    /// </summary>
-    private static void SyncAvailability(Room room)
-    {
-        room.AvailableBeds = room.Beds.Count(b => b.Status == BedStatus.Available);
-
-        // Maintenance is the owner saying the room is off the market whatever its
-        // beds say, so availability never overrides it.
-        if (room.Status != RoomStatus.Maintenance)
-            room.Status = room.AvailableBeds == 0 ? RoomStatus.Occupied : RoomStatus.Available;
-    }
+    private Task ReleaseBedAsync(Booking booking, CancellationToken ct) =>
+        RoomAvailability.ReleaseBedAsync(_db, booking, ct);
 
     // Photos are included so the response can carry the hostel's cover image —
     // the app shows it on booking cards without a second round trip.
@@ -521,6 +491,13 @@ public class BookingsController : ControllerBase
         PaystackReference = b.PaystackReference,
         DisputeReason = b.DisputeReason,
         DisputeResolution = b.DisputeResolution,
+        ExpiresAt = b.ExpiresAt,
+        // Floored at 0 rather than going negative: a hold the sweeper has not got
+        // to yet is simply out of time, and "-7 seconds left" is not a thing to
+        // put on a screen.
+        SecondsLeft = b.ExpiresAt is null
+            ? null
+            : (int)Math.Max(0, Math.Floor((b.ExpiresAt.Value - DateTime.UtcNow).TotalSeconds)),
         CreatedAt = b.CreatedAt,
         PaidAt = b.PaidAt,
         CheckedInAt = b.CheckedInAt,

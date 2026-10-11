@@ -14,6 +14,7 @@ public class AppDbContext : DbContext
     public DbSet<Campus> Campuses => Set<Campus>();
     public DbSet<Hostel> Hostels => Set<Hostel>();
     public DbSet<HostelPhoto> HostelPhotos => Set<HostelPhoto>();
+    public DbSet<RoomPhoto> RoomPhotos => Set<RoomPhoto>();
     public DbSet<Amenity> Amenities => Set<Amenity>();
     public DbSet<HostelAmenity> HostelAmenities => Set<HostelAmenity>();
     public DbSet<Room> Rooms => Set<Room>();
@@ -117,6 +118,13 @@ public class AppDbContext : DbContext
             e.HasOne(p => p.Hostel)
                 .WithMany(h => h.Photos)
                 .HasForeignKey(p => p.HostelId)
+                .OnDelete(DeleteBehavior.Cascade));
+
+        // ---------- RoomPhoto ----------
+        b.Entity<RoomPhoto>(e =>
+            e.HasOne(p => p.Room)
+                .WithMany(r => r.Photos)
+                .HasForeignKey(p => p.RoomId)
                 .OnDelete(DeleteBehavior.Cascade));
 
         // ---------- Amenity / HostelAmenity (M:N) ----------

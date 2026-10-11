@@ -252,6 +252,9 @@ namespace MeDan.Api.Data.Migrations
                     b.Property<DateTime?>("DisputedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<Guid>("HostelId")
                         .HasColumnType("uniqueidentifier");
 
@@ -922,6 +925,33 @@ namespace MeDan.Api.Data.Migrations
                     b.ToTable("Rooms");
                 });
 
+            modelBuilder.Entity("MeDan.Api.Models.RoomPhoto", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("IsCover")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RoomId");
+
+                    b.ToTable("RoomPhotos");
+                });
+
             modelBuilder.Entity("MeDan.Api.Models.StoredImage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1307,6 +1337,17 @@ namespace MeDan.Api.Data.Migrations
                     b.Navigation("Hostel");
                 });
 
+            modelBuilder.Entity("MeDan.Api.Models.RoomPhoto", b =>
+                {
+                    b.HasOne("MeDan.Api.Models.Room", "Room")
+                        .WithMany("Photos")
+                        .HasForeignKey("RoomId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Room");
+                });
+
             modelBuilder.Entity("MeDan.Api.Models.StudentProfile", b =>
                 {
                     b.HasOne("MeDan.Api.Models.Campus", "Campus")
@@ -1381,6 +1422,8 @@ namespace MeDan.Api.Data.Migrations
             modelBuilder.Entity("MeDan.Api.Models.Room", b =>
                 {
                     b.Navigation("Beds");
+
+                    b.Navigation("Photos");
                 });
 #pragma warning restore 612, 618
         }

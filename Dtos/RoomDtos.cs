@@ -74,4 +74,41 @@ public record RoomSummary
     // --- additive (per-bed model) ---
     public int AvailableBeds { get; init; }
     public string Gender { get; init; } = default!;
+
+    /// <summary>
+    /// This room's own images, cover first. Empty when none have been uploaded —
+    /// show the hostel's gallery instead.
+    /// </summary>
+    public List<string> Photos { get; init; } = new();
+}
+
+/// <summary>
+/// Free beds in a hostel grouped the way a student actually chooses: how many
+/// share the room, and who it is for.
+///
+/// Saves the app grouping the room list itself, and answers "is there a space in
+/// a two-in-a-room for a girl?" in one line rather than by reading every room.
+/// </summary>
+public record AvailabilityGroup
+{
+    /// <summary>camelCase room type, e.g. "doublyShared".</summary>
+    public string Type { get; init; } = default!;
+
+    /// <summary>How many beds the room sleeps — 1, 2, 3 or 4.</summary>
+    public int Capacity { get; init; }
+
+    /// <summary>camelCase gender, e.g. "female".</summary>
+    public string Gender { get; init; } = default!;
+
+    /// <summary>Rooms of this kind with at least one bed free.</summary>
+    public int RoomsWithSpace { get; init; }
+
+    /// <summary>Free beds across all of them.</summary>
+    public int FreeBeds { get; init; }
+
+    /// <summary>Every room of this kind, free or not.</summary>
+    public int TotalRooms { get; init; }
+
+    /// <summary>Cheapest student price among the rooms with space, GH₵. Null if none.</summary>
+    public int? FromPrice { get; init; }
 }

@@ -59,6 +59,19 @@ public record BookingResponse
     public string? PaystackReference { get; init; }
     public string? DisputeReason { get; init; }
     public string? DisputeResolution { get; init; }
+    /// <summary>
+    /// When an unpaid hold runs out, or null once it is paid. The booking screen
+    /// counts down to this; past it the bed goes back to the next student.
+    /// </summary>
+    public DateTime? ExpiresAt { get; init; }
+
+    /// <summary>
+    /// Whole seconds left on the hold, floored at 0, or null when nothing is
+    /// counting down. Sent alongside <see cref="ExpiresAt"/> so a device with a
+    /// wrong clock still shows the right remaining time.
+    /// </summary>
+    public int? SecondsLeft { get; init; }
+
     public DateTime CreatedAt { get; init; }
     public DateTime? PaidAt { get; init; }
     public DateTime? CheckedInAt { get; init; }

@@ -129,6 +129,9 @@ public class PaymentService
             booking.Status = BookingStatus.PaymentHeld;
             booking.PaidAt = DateTime.UtcNow;
             booking.PaystackReference = payment.Reference;
+            // Paid, so the hold no longer runs out — the expiry sweeper must never
+            // take this bed back from under a student who has handed over money.
+            booking.ExpiresAt = null;
             justHeld = true;
             _log.LogInformation(
                 "Payment {Reference} held in escrow for booking {Booking} (GH₵{Amount}).",

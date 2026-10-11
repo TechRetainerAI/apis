@@ -17,17 +17,20 @@ public class RoomsController : ControllerBase
     private readonly AppDbContext _db;
     private readonly CurrentUser _current;
     private readonly IProofStorage _proofs;
+    private readonly IImageStorage _images;
     private readonly ILogger<RoomsController> _log;
 
     public RoomsController(
         AppDbContext db,
         CurrentUser current,
         IProofStorage proofs,
+        IImageStorage images,
         ILogger<RoomsController> log)
     {
         _db = db;
         _current = current;
         _proofs = proofs;
+        _images = images;
         _log = log;
     }
 
@@ -36,11 +39,53 @@ public class RoomsController : ControllerBase
     public async Task<ActionResult<IEnumerable<RoomSummary>>> List(Guid hostelId, CancellationToken ct)
     {
         var rooms = await _db.Rooms.AsNoTracking()
+            .Include(r => r.Photos)
             .Where(r => r.HostelId == hostelId)
             .OrderBy(r => r.Label)
-            .Select(r => ToSummary(r))
             .ToListAsync(ct);
-        return rooms;
+        return rooms.Select(ToSummary).ToList();
+    }
+
+    /// <summary>
+    /// Free beds in this hostel, grouped by how many share the room and who it is
+    /// for — the two things a student picks on.
+    ///
+    /// The room list already carries every number here; this saves the app from
+    /// grouping it, and answers "is there space in a two-in-a-room for a girl?"
+    /// without reading every room. Rooms under maintenance are left out: they are
+    /// off the market whatever their beds say.
+    /// </summary>
+    [HttpGet("availability")]
+    [AllowAnonymous]
+    public async Task<ActionResult<IEnumerable<AvailabilityGroup>>> Availability(
+        Guid hostelId, CancellationToken ct)
+    {
+        var rooms = await _db.Rooms.AsNoTracking()
+            .Where(r => r.HostelId == hostelId && r.Status != RoomStatus.Maintenance)
+            .ToListAsync(ct);
+
+        var groups = rooms
+            .GroupBy(r => new { r.RoomType, r.Capacity, r.Gender })
+            .Select(g =>
+            {
+                var withSpace = g.Where(r => r.AvailableBeds > 0).ToList();
+                return new AvailabilityGroup
+                {
+                    Type = g.Key.RoomType.ToCamel(),
+                    Capacity = g.Key.Capacity,
+                    Gender = g.Key.Gender.ToCamel(),
+                    RoomsWithSpace = withSpace.Count,
+                    FreeBeds = g.Sum(r => r.AvailableBeds),
+                    TotalRooms = g.Count(),
+                    FromPrice = withSpace.Count == 0
+                        ? null
+                        : withSpace.Min(r => r.PricePerBedPerSemester)
+                };
+            })
+            .OrderBy(g => g.Capacity).ThenBy(g => g.Gender)
+            .ToList();
+
+        return groups;
     }
 
     /// <summary>
@@ -253,6 +298,94 @@ public class RoomsController : ControllerBase
     }
 
     /// <summary>
+    /// Upload images of this room (owner/worker). multipart/form-data, field "files".
+    /// The first one becomes the room's cover.
+    ///
+    /// Separate from the hostel's gallery on purpose: those photos show the building,
+    /// and a student picking between a two-in-a-room and a four-in-a-room needs to see
+    /// the rooms themselves.
+    /// </summary>
+    [HttpPost("{roomId:guid}/photos")]
+    [Authorize]
+    public async Task<ActionResult<List<PhotoResponse>>> AddPhotos(
+        Guid hostelId, Guid roomId, [FromForm] List<IFormFile> files, CancellationToken ct)
+    {
+        if (files is null || files.Count == 0) return BadRequest("No files uploaded.");
+
+        var hostel = await _db.Hostels
+            .Include(h => h.Company).ThenInclude(c => c.Members)
+            .FirstOrDefaultAsync(h => h.Id == hostelId, ct);
+        if (hostel is null) return NotFound("Hostel not found.");
+        if (!await CanManage(hostel, ct)) return Forbid();
+
+        var room = await _db.Rooms.Include(r => r.Photos)
+            .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
+        if (room is null) return NotFound("Room not found.");
+
+        var nextOrder = room.Photos.Count == 0 ? 0 : room.Photos.Max(p => p.SortOrder) + 1;
+        var hasCover = room.Photos.Any(p => p.IsCover);
+        var added = new List<RoomPhoto>();
+
+        foreach (var file in files)
+        {
+            string url;
+            try { url = await _images.SaveAsync(file, "rooms", ct); }
+            catch (InvalidImageException ex) { return BadRequest(ex.Message); }
+
+            var photo = new RoomPhoto
+            {
+                RoomId = room.Id,
+                Url = url,
+                SortOrder = nextOrder++,
+                IsCover = !hasCover && added.Count == 0
+            };
+            // Added through the DbSet, not room.Photos: the room is tracked and the
+            // photo already has its Id, which EF reads as an existing row and turns
+            // into an UPDATE matching nothing.
+            _db.RoomPhotos.Add(photo);
+            added.Add(photo);
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        return added.Select(p => new PhotoResponse
+        {
+            Id = p.Id, Url = p.Url, IsCover = p.IsCover, SortOrder = p.SortOrder
+        }).ToList();
+    }
+
+    /// <summary>Delete one of a room's photos. Promotes another to cover if needed.</summary>
+    [HttpDelete("{roomId:guid}/photos/{photoId:guid}")]
+    [Authorize]
+    public async Task<IActionResult> DeletePhoto(
+        Guid hostelId, Guid roomId, Guid photoId, CancellationToken ct)
+    {
+        var hostel = await _db.Hostels
+            .Include(h => h.Company).ThenInclude(c => c.Members)
+            .FirstOrDefaultAsync(h => h.Id == hostelId, ct);
+        if (hostel is null) return NotFound("Hostel not found.");
+        if (!await CanManage(hostel, ct)) return Forbid();
+
+        var room = await _db.Rooms.Include(r => r.Photos)
+            .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
+        if (room is null) return NotFound("Room not found.");
+
+        var photo = room.Photos.FirstOrDefault(p => p.Id == photoId);
+        if (photo is null) return NotFound("Photo not found.");
+
+        _images.Delete(photo.Url);
+        room.Photos.Remove(photo);
+        _db.RoomPhotos.Remove(photo);
+
+        // Keep a cover if we just removed it and others remain.
+        if (photo.IsCover && room.Photos.Count > 0)
+            room.Photos.OrderBy(p => p.SortOrder).First().IsCover = true;
+
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    /// <summary>
     /// Take a room off the market or put it back (owner/worker, or platform staff).
     /// Bed availability is untouched — this is the room-level switch the manager
     /// dashboard uses to flag maintenance.
@@ -310,6 +443,11 @@ public class RoomsController : ControllerBase
         Status = r.Status.ToCamel(),
         Capacity = r.Capacity,
         AvailableBeds = r.AvailableBeds,
-        Gender = r.Gender.ToCamel()
+        Gender = r.Gender.ToCamel(),
+        Photos = r.Photos
+            .OrderByDescending(p => p.IsCover)
+            .ThenBy(p => p.SortOrder)
+            .Select(p => p.Url)
+            .ToList()
     };
 }

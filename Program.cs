@@ -135,6 +135,10 @@ builder.Services.AddScoped<BookingNotifier>();
 // Closes out escrow on its own once the dispute window passes.
 builder.Services.AddHostedService<EscrowReleaseService>();
 
+// Takes the bed back when an unpaid hold runs out. Without it a student who
+// never paid blocked that bed for good.
+builder.Services.AddHostedService<BookingExpiryService>();
+
 // ---------- MVC + Swagger ----------
 builder.Services.AddControllers()
     .AddJsonOptions(o =>

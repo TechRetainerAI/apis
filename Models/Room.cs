@@ -21,7 +21,11 @@ public class Room
     /// <summary>Number of beds/spaces in the room (1, 2, 3, or 4).</summary>
     public int Capacity { get; set; } = 1;
 
-    /// <summary>Denormalized count of beds still available (kept in sync when beds change).</summary>
+    /// <summary>
+    /// How many beds are free. Recomputed from the bed rows by
+    /// <see cref="Services.RoomAvailability"/> on every change — never nudged up or
+    /// down, which is how it used to drift past capacity.
+    /// </summary>
     public int AvailableBeds { get; set; }
 
     /// <summary>Price per bed/space per semester, GH₵.</summary>
@@ -36,4 +40,7 @@ public class Room
 
     // Navigation
     public ICollection<Bed> Beds { get; set; } = new List<Bed>();
+
+    /// <summary>This room's own gallery, separate from the hostel's.</summary>
+    public ICollection<RoomPhoto> Photos { get; set; } = new List<RoomPhoto>();
 }

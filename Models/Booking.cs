@@ -49,6 +49,16 @@ public class Booking
     [MaxLength(1000)]
     public string? DisputeResolution { get; set; }
 
+    /// <summary>
+    /// When an unpaid hold runs out. Set while the booking is <see cref="BookingStatus.Pending"/>
+    /// and cleared the moment payment is held — paid bookings never expire.
+    ///
+    /// Without this a student who opened the booking screen and walked away held
+    /// the bed forever, so rooms slowly advertised fewer beds than they really had
+    /// free. The sweeper cancels these and puts the bed back.
+    /// </summary>
+    public DateTime? ExpiresAt { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? PaidAt { get; set; }
     public DateTime? CheckedInAt { get; set; }
