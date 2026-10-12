@@ -40,6 +40,7 @@ public class RoomsController : ControllerBase
     {
         var rooms = await _db.Rooms.AsNoTracking()
             .Include(r => r.Photos)
+            .Include(r => r.Beds)
             .Where(r => r.HostelId == hostelId)
             .OrderBy(r => r.Label)
             .ToListAsync(ct);
@@ -407,11 +408,58 @@ public class RoomsController : ControllerBase
         var room = await _db.Rooms
             // Same reason as Update: the summary this returns must keep the gallery.
             .Include(r => r.Photos)
+            .Include(r => r.Beds)
             .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
         if (room is null) return NotFound("Room not found.");
 
         room.Status = req.Status;
         await _db.SaveChangesAsync(ct);
+        return ToSummary(room);
+    }
+
+    /// <summary>
+    /// Mark one bed occupied, or free it again (owner/worker, or platform
+    /// staff) — for the walk-in who paid outside the app, so the advertised
+    /// "beds free" matches the physical room.
+    ///
+    /// Only <c>available</c> and <c>occupied</c> are accepted, and a bed a
+    /// booking holds is refused with 409: that bed's state belongs to the
+    /// booking flow (payment, check-in, refunds), and flipping it by hand
+    /// would strand the student who paid for it.
+    /// </summary>
+    [HttpPut("{roomId:guid}/beds/{bedId:guid}/status")]
+    [Authorize]
+    public async Task<ActionResult<RoomSummary>> SetBedStatus(
+        Guid hostelId, Guid roomId, Guid bedId, SetBedStatusRequest req, CancellationToken ct)
+    {
+        if (req.Status == BedStatus.Reserved)
+            return BadRequest("A bed becomes reserved through a booking, not by hand.");
+
+        var hostel = await _db.Hostels
+            .Include(h => h.Company).ThenInclude(c => c.Members)
+            .FirstOrDefaultAsync(h => h.Id == hostelId, ct);
+        if (hostel is null) return NotFound("Hostel not found.");
+        if (!await CanManage(hostel, ct)) return Forbid();
+
+        var room = await _db.Rooms
+            .Include(r => r.Beds)
+            .Include(r => r.Photos)
+            .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
+        if (room is null) return NotFound("Room not found.");
+
+        var bed = room.Beds.FirstOrDefault(b => b.Id == bedId);
+        if (bed is null) return NotFound("Bed not found.");
+
+        if (bed.CurrentBookingId is not null)
+            return Conflict(
+                $"{bed.Label} is held by a booking. Resolve that booking instead " +
+                "of changing the bed by hand.");
+
+        bed.Status = req.Status;
+        // The bed rows are the real source of availability — keep the counter in step.
+        room.AvailableBeds = room.Beds.Count(b => b.Status == BedStatus.Available);
+        await _db.SaveChangesAsync(ct);
+
         return ToSummary(room);
     }
 
@@ -460,6 +508,16 @@ public class RoomsController : ControllerBase
             .Select(p => new PhotoResponse
             {
                 Id = p.Id, Url = p.Url, IsCover = p.IsCover, SortOrder = p.SortOrder
+            })
+            .ToList(),
+        Beds = r.Beds
+            .OrderBy(b => b.Label)
+            .Select(b => new BedSummary
+            {
+                Id = b.Id,
+                Label = b.Label,
+                Status = b.Status.ToCamel(),
+                HasBooking = b.CurrentBookingId is not null
             })
             .ToList()
     };

@@ -144,6 +144,7 @@ public class HostelsController : ControllerBase
             .Include(x => x.Photos)
             .Include(x => x.Amenities).ThenInclude(a => a.Amenity)
             .Include(x => x.Rooms).ThenInclude(r => r.Photos)
+            .Include(x => x.Rooms).ThenInclude(r => r.Beds)
             .FirstOrDefaultAsync(x => x.Id == id, ct);
 
         if (h is null) return null;
@@ -567,6 +568,16 @@ public class HostelsController : ControllerBase
             .Select(p => new PhotoResponse
             {
                 Id = p.Id, Url = p.Url, IsCover = p.IsCover, SortOrder = p.SortOrder
+            })
+            .ToList(),
+        Beds = r.Beds
+            .OrderBy(b => b.Label)
+            .Select(b => new BedSummary
+            {
+                Id = b.Id,
+                Label = b.Label,
+                Status = b.Status.ToCamel(),
+                HasBooking = b.CurrentBookingId is not null
             })
             .ToList()
     };

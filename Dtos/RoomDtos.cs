@@ -51,6 +51,32 @@ public record SetRoomStatusRequest
     [Required] public RoomStatus Status { get; init; }
 }
 
+/// <summary>
+/// Body for PUT /api/hostels/{hostelId}/rooms/{roomId}/beds/{bedId}/status.
+/// Only <c>available</c> and <c>occupied</c> are accepted — <c>reserved</c>
+/// belongs to the booking flow and is never set by hand.
+/// </summary>
+public record SetBedStatusRequest
+{
+    [Required] public BedStatus Status { get; init; }
+}
+
+/// <summary>One bed inside a room, for the manage screens.</summary>
+public record BedSummary
+{
+    public Guid Id { get; init; }
+    public string Label { get; init; } = default!;   // e.g. "Bed A"
+
+    /// <summary>camelCase: available | reserved | occupied.</summary>
+    public string Status { get; init; } = default!;
+
+    /// <summary>
+    /// True when a booking holds this bed. Such a bed can't be flipped by
+    /// hand — resolve the booking instead.
+    /// </summary>
+    public bool HasBooking { get; init; }
+}
+
 /// <summary>Mirrors the app's <c>RoomModel</c> contract; availableBeds/gender are additive.</summary>
 public record RoomSummary
 {
@@ -86,6 +112,13 @@ public record RoomSummary
     /// Mirrors <c>HostelDetail.PhotoItems</c>.
     /// </summary>
     public List<PhotoResponse> PhotoItems { get; init; } = new();
+
+    /// <summary>
+    /// The individual beds, for manage screens — who's free, who's in. Empty
+    /// when the query didn't load them; <see cref="AvailableBeds"/> stays the
+    /// number to trust for availability.
+    /// </summary>
+    public List<BedSummary> Beds { get; init; } = new();
 }
 
 /// <summary>
