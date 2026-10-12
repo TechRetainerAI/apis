@@ -150,6 +150,9 @@ public class RoomsController : ControllerBase
 
         var room = await _db.Rooms
             .Include(r => r.Beds)
+            // Loaded so the returned summary still carries the gallery — a save
+            // that answered with no photos would wipe them off the manage screen.
+            .Include(r => r.Photos)
             .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
         if (room is null) return NotFound("Room not found.");
 
@@ -402,6 +405,8 @@ public class RoomsController : ControllerBase
         if (!await CanManage(hostel, ct)) return Forbid();
 
         var room = await _db.Rooms
+            // Same reason as Update: the summary this returns must keep the gallery.
+            .Include(r => r.Photos)
             .FirstOrDefaultAsync(r => r.Id == roomId && r.HostelId == hostelId, ct);
         if (room is null) return NotFound("Room not found.");
 
@@ -448,6 +453,14 @@ public class RoomsController : ControllerBase
             .OrderByDescending(p => p.IsCover)
             .ThenBy(p => p.SortOrder)
             .Select(p => p.Url)
+            .ToList(),
+        PhotoItems = r.Photos
+            .OrderByDescending(p => p.IsCover)
+            .ThenBy(p => p.SortOrder)
+            .Select(p => new PhotoResponse
+            {
+                Id = p.Id, Url = p.Url, IsCover = p.IsCover, SortOrder = p.SortOrder
+            })
             .ToList()
     };
 }

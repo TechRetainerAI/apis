@@ -143,7 +143,7 @@ public class HostelsController : ControllerBase
             .Include(x => x.Company)
             .Include(x => x.Photos)
             .Include(x => x.Amenities).ThenInclude(a => a.Amenity)
-            .Include(x => x.Rooms)
+            .Include(x => x.Rooms).ThenInclude(r => r.Photos)
             .FirstOrDefaultAsync(x => x.Id == id, ct);
 
         if (h is null) return null;
@@ -549,9 +549,25 @@ public class HostelsController : ControllerBase
         Label = r.Label,
         Type = r.RoomType.ToCamel(),
         PricePerSemester = r.PricePerBedPerSemester,
+        // The manage screens bind their edit forms to this; leaving it unset
+        // showed every room as earning the owner GH₵0.
+        OwnerPrice = Pricing.OwnerPrice(r.PricePerBedPerSemester),
         Status = r.Status.ToCamel(),
         Capacity = r.Capacity,
         AvailableBeds = r.AvailableBeds,
-        Gender = r.Gender.ToCamel()
+        Gender = r.Gender.ToCamel(),
+        Photos = r.Photos
+            .OrderByDescending(p => p.IsCover)
+            .ThenBy(p => p.SortOrder)
+            .Select(p => p.Url)
+            .ToList(),
+        PhotoItems = r.Photos
+            .OrderByDescending(p => p.IsCover)
+            .ThenBy(p => p.SortOrder)
+            .Select(p => new PhotoResponse
+            {
+                Id = p.Id, Url = p.Url, IsCover = p.IsCover, SortOrder = p.SortOrder
+            })
+            .ToList()
     };
 }

@@ -80,6 +80,12 @@ public record RoomSummary
     /// show the hostel's gallery instead.
     /// </summary>
     public List<string> Photos { get; init; } = new();
+
+    /// <summary>
+    /// Same photos with their ids, so a manage screen can delete a specific one.
+    /// Mirrors <c>HostelDetail.PhotoItems</c>.
+    /// </summary>
+    public List<PhotoResponse> PhotoItems { get; init; } = new();
 }
 
 /// <summary>
