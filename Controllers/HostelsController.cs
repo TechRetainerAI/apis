@@ -376,7 +376,7 @@ public class HostelsController : ControllerBase
 
         // Payments cascade from Booking, but the uploaded proofs live on disk and
         // nothing else would ever come back for them.
-        foreach (var payment in payments) _proofs.Delete(payment.ProofKey);
+        foreach (var key in payments.SelectMany(p => p.AllProofKeys())) _proofs.Delete(key);
 
         // Beds point at their current booking with SetNull, so bookings can go next.
         if (bookings.Count > 0) _db.Bookings.RemoveRange(bookings);

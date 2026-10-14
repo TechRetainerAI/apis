@@ -51,11 +51,14 @@ public record PaymentResponse
     // ------------------------------------------------- manual MoMo (optional)
 
     /// <summary>
-    /// Where to fetch the uploaded proof, e.g. "/api/payments/MD-M-ab12/proof".
+    /// Where to fetch the first uploaded proof, e.g. "/api/payments/MD-M-ab12/proof".
     /// Null unless this is a manual payment. Requires the caller's bearer token —
     /// it is not a public image URL.
     /// </summary>
     public string? ProofUrl { get; init; }
+
+    /// <summary>Every proof, in upload order (…/proof/0, /proof/1, …). Same auth rule.</summary>
+    public IReadOnlyList<string> ProofUrls { get; init; } = Array.Empty<string>();
 
     public string? SenderPhone { get; init; }
     public string? SenderName { get; init; }
@@ -95,8 +98,16 @@ public record SubmitManualPaymentRequest
 {
     [Required] public Guid BookingId { get; init; }
 
-    /// <summary>Screenshot of the transfer. JPG, PNG or WEBP, up to 5 MB.</summary>
-    [Required] public IFormFile Proof { get; init; } = default!;
+    /// <summary>
+    /// Proof of the transfer: a screenshot (JPG/PNG/WEBP, ≤5 MB) or a screen
+    /// recording (MP4/MOV/WEBM/3GP, ≤25 MB). Older app builds send this single
+    /// field; newer ones send <see cref="Proofs"/>. At least one file between
+    /// the two, at most three in all.
+    /// </summary>
+    public IFormFile? Proof { get; init; }
+
+    /// <summary>Up to three proof files, shown to reviewers in this order.</summary>
+    public List<IFormFile>? Proofs { get; init; }
 
     /// <summary>Transaction ID on the student's receipt.</summary>
     [MaxLength(100)] public string? TransactionId { get; init; }
@@ -126,8 +137,11 @@ public record ManualPaymentReviewResponse
     public string? SenderName { get; init; }
     public string? ProviderTransactionId { get; init; }
 
-    /// <summary>Authorized endpoint for the screenshot.</summary>
+    /// <summary>Authorized endpoint for the first proof.</summary>
     public string? ProofUrl { get; init; }
+
+    /// <summary>Every proof, in upload order (…/proof/0, /proof/1, …).</summary>
+    public IReadOnlyList<string> ProofUrls { get; init; } = Array.Empty<string>();
 
     public DateTime? SubmittedAt { get; init; }
     public DateTime? ReviewedAt { get; init; }

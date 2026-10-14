@@ -13,9 +13,17 @@ namespace MeDan.Api.Services;
 /// </summary>
 public class DbProofStorage : IProofStorage
 {
-    private const long MaxBytes = 5 * 1024 * 1024; // 5 MB
-    private static readonly HashSet<string> AllowedContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    private const long MaxImageBytes = 5 * 1024 * 1024;  // 5 MB
+    // A screen recording of the MoMo app is a legitimate proof too; recordings
+    // run bigger than screenshots, so they get their own ceiling.
+    private const long MaxVideoBytes = 25 * 1024 * 1024; // 25 MB
+
+    private static readonly HashSet<string> ImageContentTypes = new(StringComparer.OrdinalIgnoreCase)
         { "image/jpeg", "image/png", "image/webp" };
+
+    // mp4 + 3gp cover what Ghanaian Android phones record; quicktime is iPhone.
+    private static readonly HashSet<string> VideoContentTypes = new(StringComparer.OrdinalIgnoreCase)
+        { "video/mp4", "video/quicktime", "video/webm", "video/3gpp" };
 
     private readonly AppDbContext _db;
 
@@ -24,11 +32,17 @@ public class DbProofStorage : IProofStorage
     public async Task<string> SaveAsync(IFormFile file, CancellationToken ct = default)
     {
         if (file is null || file.Length == 0)
-            throw new InvalidImageException("No screenshot was uploaded.");
-        if (file.Length > MaxBytes)
-            throw new InvalidImageException($"The screenshot is too large (max {MaxBytes / (1024 * 1024)} MB).");
-        if (!AllowedContentTypes.Contains(file.ContentType))
-            throw new InvalidImageException("The screenshot must be a JPG, PNG or WEBP image.");
+            throw new InvalidImageException("No proof was uploaded.");
+
+        var isVideo = VideoContentTypes.Contains(file.ContentType);
+        if (!isVideo && !ImageContentTypes.Contains(file.ContentType))
+            throw new InvalidImageException(
+                "The proof must be a JPG, PNG or WEBP image, or an MP4, MOV, WEBM or 3GP video.");
+
+        var maxBytes = isVideo ? MaxVideoBytes : MaxImageBytes;
+        if (file.Length > maxBytes)
+            throw new InvalidImageException(
+                $"The {(isVideo ? "video" : "screenshot")} is too large (max {maxBytes / (1024 * 1024)} MB).");
 
         using var buffer = new MemoryStream();
         await file.CopyToAsync(buffer, ct);
@@ -59,6 +73,10 @@ public class DbProofStorage : IProofStorage
         {
             "image/png" => ".png",
             "image/webp" => ".webp",
+            "video/mp4" => ".mp4",
+            "video/quicktime" => ".mov",
+            "video/webm" => ".webm",
+            "video/3gpp" => ".3gp",
             _ => ".jpg"
         };
         return new ProofFile(new MemoryStream(row.Data), row.ContentType, $"proof-{id:N}{ext}");

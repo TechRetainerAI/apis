@@ -52,6 +52,25 @@ public record SendNotificationResponse
     public string Message { get; init; } = default!;
 }
 
+/// <summary>A past staff send, for the dashboard's history list.</summary>
+public record BroadcastHistoryItem
+{
+    public Guid Id { get; init; }
+    public string Title { get; init; } = default!;
+    public string Body { get; init; } = default!;
+    public string? Route { get; init; }
+    public string? ImageUrl { get; init; }
+
+    /// <summary>"everyone", "role student", or "user {id}".</summary>
+    public string Audience { get; init; } = default!;
+
+    public int Recipients { get; init; }
+    public int Devices { get; init; }
+    public bool Delivered { get; init; }
+    public string SentByName { get; init; } = default!;
+    public DateTime CreatedAt { get; init; }
+}
+
 public record NotificationReachResponse
 {
     public int TotalUsers { get; init; }
@@ -151,6 +170,37 @@ public class AdminNotificationsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// The last 100 staff sends, newest first — so the sender can see their
+    /// broadcast actually went out and what it said.
+    /// </summary>
+    [HttpGet("history")]
+    public async Task<ActionResult<IEnumerable<BroadcastHistoryItem>>> History(CancellationToken ct)
+    {
+        var (_, error) = await RequireStaffAsync(ct);
+        if (error is not null) return error;
+
+        var items = await _db.NotificationBroadcasts.AsNoTracking()
+            .OrderByDescending(b => b.CreatedAt)
+            .Take(100)
+            .ToListAsync(ct);
+
+        return items.Select(b => new BroadcastHistoryItem
+        {
+            Id = b.Id,
+            Title = b.Title,
+            Body = b.Body,
+            Route = b.Route,
+            ImageUrl = b.ImageUrl,
+            Audience = b.Audience,
+            Recipients = b.Recipients,
+            Devices = b.Devices,
+            Delivered = b.Delivered,
+            SentByName = b.SentByName,
+            CreatedAt = b.CreatedAt
+        }).ToList();
+    }
+
     /// <summary>Sends a notification to the chosen audience.</summary>
     [HttpPost("send")]
     public async Task<ActionResult<SendNotificationResponse>> Send(
@@ -224,6 +274,23 @@ public class AdminNotificationsController : ControllerBase
         _log.LogInformation(
             "{Staff} sent \"{Title}\" to {Audience}: {Devices} device(s).",
             me!.Email, title, audienceLabel, devices);
+
+        // Recorded so the dashboard can show what was sent — before this, a
+        // broadcast vanished from the sender's view the moment the form cleared.
+        _db.NotificationBroadcasts.Add(new NotificationBroadcast
+        {
+            Title = title,
+            Body = body,
+            Route = req.Route?.Trim(),
+            ImageUrl = req.ImageUrl,
+            Audience = audienceLabel,
+            Recipients = userIds.Count,
+            Devices = devices,
+            Delivered = _push.IsConfigured,
+            SentByUserId = me.Id,
+            SentByName = me.FullName
+        });
+        await _db.SaveChangesAsync(ct);
 
         return new SendNotificationResponse
         {

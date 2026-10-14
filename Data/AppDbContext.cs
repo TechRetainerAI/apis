@@ -29,6 +29,7 @@ public class AppDbContext : DbContext
     public DbSet<StoredImage> StoredImages => Set<StoredImage>();
     public DbSet<CampusEvent> Events => Set<CampusEvent>();
     public DbSet<UserNotification> Notifications => Set<UserNotification>();
+    public DbSet<NotificationBroadcast> NotificationBroadcasts => Set<NotificationBroadcast>();
 
     // Filtered-index predicates are raw SQL, so they carry the provider's own
     // identifier quoting: SQL Server (and SQLite) accept [brackets], Postgres

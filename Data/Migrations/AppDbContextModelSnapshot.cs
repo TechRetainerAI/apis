@@ -660,6 +660,60 @@ namespace MeDan.Api.Data.Migrations
                     b.ToTable("HostelPhotos");
                 });
 
+            modelBuilder.Entity("MeDan.Api.Models.NotificationBroadcast", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Audience")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("Delivered")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("Devices")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ImageUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("Recipients")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Route")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("SentByName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<Guid?>("SentByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("NotificationBroadcasts");
+                });
+
             modelBuilder.Entity("MeDan.Api.Models.Payment", b =>
                 {
                     b.Property<string>("Reference")
@@ -690,6 +744,10 @@ namespace MeDan.Api.Data.Migrations
                     b.Property<string>("ProofKey")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ProofKeys")
+                        .HasMaxLength(700)
+                        .HasColumnType("nvarchar(700)");
 
                     b.Property<string>("ProviderTransactionId")
                         .HasMaxLength(100)

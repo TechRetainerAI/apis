@@ -30,13 +30,29 @@ public class Payment
     // here instead of with a provider.
 
     /// <summary>
-    /// Private storage key for the uploaded screenshot (not a public URL — the
-    /// image is served by <c>GET /api/payments/{reference}/proof</c>, which
+    /// Private storage key for the first uploaded proof (not a public URL — the
+    /// file is served by <c>GET /api/payments/{reference}/proof</c>, which
     /// checks the caller first). A receipt shows the student's name, number and
     /// balance, so it is deliberately not in wwwroot.
+    /// Kept as the first key even now that <see cref="ProofKeys"/> exists, so
+    /// older clients reading a single proof keep working.
     /// </summary>
     [MaxLength(200)]
     public string? ProofKey { get; set; }
+
+    /// <summary>
+    /// Every proof key, semicolon-joined in upload order (the first repeats
+    /// <see cref="ProofKey"/>). Null on payments from before multi-proof
+    /// support — read through <see cref="AllProofKeys"/>, which falls back.
+    /// </summary>
+    [MaxLength(700)]
+    public string? ProofKeys { get; set; }
+
+    /// <summary>All proof keys in upload order, old single-key rows included.</summary>
+    public IReadOnlyList<string> AllProofKeys() =>
+        !string.IsNullOrEmpty(ProofKeys)
+            ? ProofKeys.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            : ProofKey is null ? [] : [ProofKey];
 
     /// <summary>Transaction ID from the student's MoMo receipt, used to spot reuse.</summary>
     [MaxLength(100)]

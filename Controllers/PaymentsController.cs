@@ -347,7 +347,9 @@ public class PaymentsController : ControllerBase
     /// does not advance until staff accept it.
     /// </summary>
     [HttpPost("manual/submit")]
-    [RequestSizeLimit(6 * 1024 * 1024)]
+    // Three proofs, of which a screen recording may be 25 MB — plus form overhead.
+    [RequestSizeLimit(80 * 1024 * 1024)]
+    [RequestFormLimits(MultipartBodyLengthLimit = 80 * 1024 * 1024)]
     public async Task<ActionResult<PaymentResponse>> SubmitManual(
         [FromForm] SubmitManualPaymentRequest req, CancellationToken ct)
     {
@@ -396,13 +398,25 @@ public class PaymentsController : ControllerBase
             }
         }
 
-        string proofKey;
+        // Old builds send one file as `proof`; newer ones a `proofs` list. Merge
+        // them so both work, newest contract first.
+        var files = new List<IFormFile>();
+        if (req.Proofs is not null) files.AddRange(req.Proofs.Where(f => f is { Length: > 0 }));
+        if (req.Proof is { Length: > 0 }) files.Add(req.Proof);
+
+        if (files.Count == 0) return BadRequest("Attach at least one proof of the transfer.");
+        if (files.Count > 3) return BadRequest("At most 3 proof files can be attached.");
+
+        var proofKeys = new List<string>();
         try
         {
-            proofKey = await _proofs.SaveAsync(req.Proof, ct);
+            foreach (var file in files)
+                proofKeys.Add(await _proofs.SaveAsync(file, ct));
         }
         catch (InvalidImageException ex)
         {
+            // Half an evidence set is worse than none — drop what was stored.
+            foreach (var key in proofKeys) _proofs.Delete(key);
             return BadRequest(ex.Message);
         }
 
@@ -410,7 +424,7 @@ public class PaymentsController : ControllerBase
         // reference) so the one-payment-per-booking relationship holds.
         if (booking.Payment is not null)
         {
-            _proofs.Delete(booking.Payment.ProofKey);
+            foreach (var key in booking.Payment.AllProofKeys()) _proofs.Delete(key);
             _db.Payments.Remove(booking.Payment);
             await _db.SaveChangesAsync(ct);
         }
@@ -422,7 +436,8 @@ public class PaymentsController : ControllerBase
             Amount = booking.Amount,
             Channel = PaymentChannel.ManualMomo,
             Status = PaymentStatus.PendingReview,
-            ProofKey = proofKey,
+            ProofKey = proofKeys[0],
+            ProofKeys = string.Join(';', proofKeys),
             ProviderTransactionId = transactionId,
             SenderPhone = req.SenderPhone?.Trim() ?? me.Phone,
             SenderName = req.SenderName?.Trim() ?? me.FullName,
@@ -450,7 +465,12 @@ public class PaymentsController : ControllerBase
     /// number and balance.
     /// </summary>
     [HttpGet("{reference}/proof")]
-    public async Task<IActionResult> Proof(string reference, CancellationToken ct)
+    public Task<IActionResult> Proof(string reference, CancellationToken ct) =>
+        ProofAt(reference, 0, ct);
+
+    /// <summary>One proof of possibly several, by upload order.</summary>
+    [HttpGet("{reference}/proof/{index:int}")]
+    public async Task<IActionResult> ProofAt(string reference, int index, CancellationToken ct)
     {
         var me = await _current.GetAsync(ct: ct);
         if (me is null) return Unauthorized("Register first.");
@@ -463,7 +483,11 @@ public class PaymentsController : ControllerBase
         var isStaff = me.Role is UserRole.Admin or UserRole.Manager;
         if (payment.Booking.StudentUserId != me.Id && !isStaff) return Forbid();
 
-        var file = _proofs.Open(payment.ProofKey);
+        var keys = payment.AllProofKeys();
+        if (index < 0 || index >= keys.Count)
+            return NotFound("No proof was uploaded for this payment.");
+
+        var file = _proofs.Open(keys[index]);
         if (file is null) return NotFound("No proof was uploaded for this payment.");
 
         // Private by nature: keep it out of shared caches even over HTTPS.
@@ -568,6 +592,8 @@ public class PaymentsController : ControllerBase
 
         // Null for Paystack payments, so the app can tell the two routes apart.
         ProofUrl = p.ProofKey is null ? null : $"/api/payments/{p.Reference}/proof",
+        ProofUrls = p.AllProofKeys()
+            .Select((_, i) => $"/api/payments/{p.Reference}/proof/{i}").ToList(),
         SenderPhone = p.SenderPhone,
         SenderName = p.SenderName,
         ProviderTransactionId = p.ProviderTransactionId,

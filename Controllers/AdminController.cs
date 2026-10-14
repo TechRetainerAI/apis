@@ -501,6 +501,8 @@ public class AdminController : ControllerBase
         SenderName = p.SenderName,
         ProviderTransactionId = p.ProviderTransactionId,
         ProofUrl = p.ProofKey is null ? null : $"/api/payments/{p.Reference}/proof",
+        ProofUrls = p.AllProofKeys()
+            .Select((_, i) => $"/api/payments/{p.Reference}/proof/{i}").ToList(),
         SubmittedAt = p.SubmittedAt,
         ReviewedAt = p.ReviewedAt,
         ReviewNote = p.ReviewNote,
